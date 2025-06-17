@@ -229,4 +229,35 @@ class UserRepository extends CoreRepository
             ->withSum('wallet', 'price')
             ->paginate(data_get($filter, 'perPage', 10));
     }
+
+
+    //deliveryManDetails with orders
+    /**
+     * @param int $id
+     * @return User|null
+     */
+    public function deliveryManDetails(int $id): ?User
+    {
+        $user = $this->model()
+            ->with([
+                'wallet',
+                'deliveryManSetting',
+                'deliveryManOrders' => fn($q) => $q->select([
+                    'id', 'total_price', 'status', 'location', 'address',
+                    'delivery_fee', 'rate', 'delivery_date', 'delivery_time', 'deliveryman', 'shop_id', 'user_id',
+                    'username', 'current'
+                ]),
+                'deliveryManOrders.shop:id,uuid,price,price_per_km,logo_img,location',
+                'deliveryManOrders.user:id,img,firstname,lastname',
+                'deliveryManOrders.shop.translation' => fn($q) => $q->where('locale', $this->language),
+            ])
+            ->withAvg('assignReviews', 'rating')
+            ->withCount('deliveryManOrders')
+            ->withSum('deliveryManOrders', 'total_price')
+            ->find($id);
+
+        return $user;
+}
+
+
 }

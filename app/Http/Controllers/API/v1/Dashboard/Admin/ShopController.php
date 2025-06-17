@@ -14,6 +14,11 @@ use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
 use App\Http\Resources\ShopResource;
+
+use App\Repositories\SellerFinanceRepository;
+
+use Illuminate\Http\Response;
+
 use App\Http\Resources\UserResource;
 use Illuminate\Support\Facades\View;
 use Maatwebsite\Excel\Facades\Excel;
@@ -340,42 +345,42 @@ class ShopController extends AdminBaseController
     }
 
     //get shop detail with orders
-   public function getAllActiveShopsWithOrders(): JsonResponse
-{
-    Log::info('getAllActiveShopsWithOrders called');
+    public function getAllActiveShopsWithOrders(): JsonResponse
+    {
+        Log::info('getAllActiveShopsWithOrders called');
 
-    // Get all active shops with their data
-    $shops = $this->repository->getAllActiveShopsWithOrders();
+        // Get all active shops with their data
+        $shops = $this->repository->getAllActiveShopsWithOrders();
 
-    if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
-        return response()->json([
-            'message' => 'Unauthorized access: Invalid or inactive cache key',
-            'code' => 403
-        ], 403);
+        if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
+            return response()->json([
+                'message' => 'Unauthorized access: Invalid or inactive cache key',
+                'code' => 403
+            ], 403);
+        }
+
+        // Transform the data for response
+        $responseData = $shops->map(function ($shop) {
+            $orders = $shop->orders;
+            unset($shop->orders);
+
+            return [
+                'shop' => ShopResource::make($shop),
+                'orders' => OrderResource::collection($orders),
+                'statistics' => [
+                    'total_commission' => $shop->total_commission,
+                    'total_discounts' => $shop->total_discounts ?? 0,
+                    'orders_count' => $orders->count(),
+                    'total' => $orders->sum('total_price') ?? 0,
+                ]
+            ];
+        });
+
+        return $this->successResponse(
+            __('errors.' . ResponseError::SUCCESS, locale: $this->language),
+            $responseData
+        );
     }
-
-    // Transform the data for response
-    $responseData = $shops->map(function ($shop) {
-        $orders = $shop->orders;
-        unset($shop->orders);
-
-        return [
-            'shop' => ShopResource::make($shop),
-            'orders' => OrderResource::collection($orders),
-            'statistics' => [
-                'total_commission' => $shop->total_commission,
-                'total_discounts' => $shop->total_discounts ?? 0,
-                'orders_count' => $orders->count(),
-                'total' => $orders->sum('total_price') ?? 0,
-            ]
-        ];
-    });
-
-    return $this->successResponse(
-        __('errors.' . ResponseError::SUCCESS, locale: $this->language),
-        $responseData
-    );
-}
 
     public function getShopDetailWithOrders(string $uuid): JsonResponse
     {
@@ -417,12 +422,8 @@ class ShopController extends AdminBaseController
 
     //downloadShopInvoice
 
-
- public function downloadShopInvoice(string $uuid)
+    public function downloadShopInvoice(string $uuid): Response|JsonResponse
     {
-        // --- 1. START LOGGING ---
-        // This confirms the request has started.
-        Log::info('--------------------------------------------------');
         Log::info('Starting invoice download process for Shop UUID: ' . $uuid);
 
         if (app()->bound('debugbar')) {
@@ -430,18 +431,17 @@ class ShopController extends AdminBaseController
         }
 
         try {
-            // --- 2. LOG DATABASE QUERY ---
+            // Fetch shop with orders
             Log::info('Fetching shop details from repository...');
             $shop = $this->repository->shopDetailsWithOrders($uuid);
 
             if (empty($shop)) {
-                Log::warning('Shop not found for UUID: ' . $uuid . '. Aborting.');
+                Log::warning('Shop not found for UUID: ' . $uuid);
                 return response()->json(['message' => 'Invoice target shop not found.'], 404);
             }
             Log::info('Shop data fetched successfully for: ' . $shop->name);
 
-
-            // --- 3. LOG AUTHORIZATION CHECK ---
+            // Authorization check
             Log::info('Checking authorization...');
             if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
                 Log::warning('Unauthorized download attempt for UUID: ' . $uuid);
@@ -449,105 +449,156 @@ class ShopController extends AdminBaseController
             }
             Log::info('Authorization successful.');
 
-            // --- 4. LOG DATA PREPARATION ---
+            // Prepare data
             Log::info('Preparing data for PDF view...');
             $totalCommission = $shop->orders->sum('commission_fee');
             $orders = $shop->orders;
             unset($shop->orders);
 
-            $invoiceData = [
-                'shop' => $shop,
-                'orders' => $orders,
-                'total_commission' => $totalCommission,
-                'total_discounts' => $shop->total_discounts ?? 0,
-            ];
-
             $logo = Settings::where('key', 'logo')->first()?->value;
             $lang = $this->language;
 
-            // This is a very important log. Check if the logo path is what you expect.
-            Log::info('Data prepared. Logo path resolved to: ' . ($logo ?? 'NULL'));
+            Log::info('Data prepared. Logo path: ' . ($logo ?? 'NULL'));
 
-            // --- 5. LOG BEFORE PDF GENERATION ---
+            // Generate PDF
             Log::info('Setting PDF options and loading view: shop-invoice');
-            Pdf::setOption(['dpi' => 150, 'defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true, 'isRemoteEnabled' => true]);
-            
-            // This is the line that might be failing.
-            $pdf = PDF::loadView('shop-invoice', compact('orders', 'shop', 'invoiceData', 'logo', 'lang'));
-            
-            Log::info('PDF view loaded successfully. Generating PDF output...');
+            PDF::setOption(['dpi' => 150, 'defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true, 'isRemoteEnabled' => true]);
 
-            $pdfContent = $pdf->output();
-            
-            // This log is crucial. A tiny size here means generation failed.
-            Log::info('PDF content generated. Size: ' . strlen($pdfContent) . ' bytes.');
-            Log::info('--------------------------------------------------');
+            $pdf = PDF::loadView('shop-invoice', compact('shop', 'orders', 'totalCommission', 'logo', 'lang'));
 
-            // --- 6. SUCCESS - SEND RESPONSE ---
-            return response($pdfContent, 200, [
+            Log::info('PDF view loaded successfully. Generating PDF...');
+
+            // Debug headers before sending
+            Log::info('Returning PDF with headers:', [
                 'Content-Type' => 'application/pdf',
-                'Content-Disposition' => 'attachment; filename="invoice-' . $uuid . '.pdf"',
+                'Content-Disposition' => 'attachment; filename="shop-invoice-' . $uuid . '.pdf"',
             ]);
 
+            return $pdf->download('invoice.pdf');
         } catch (\Exception $e) {
-            // --- 7. CRITICAL: LOG THE EXCEPTION ---
-            // If the code fails, this block will execute. The error message here is the solution.
-            Log::error('CRITICAL: PDF generation failed unexpectedly.', [
+            Log::error('CRITICAL: PDF generation failed.', [
                 'uuid' => $uuid,
                 'error_message' => $e->getMessage(),
                 'file' => $e->getFile(),
                 'line' => $e->getLine(),
-                'trace' => $e->getTraceAsString(), // The full stack trace is very helpful
+                'trace' => $e->getTraceAsString(),
             ]);
-            Log::info('--------------------------------------------------');
 
-
-            // Return a server error response
             return response()->json([
                 'message' => 'The server encountered an error while generating the PDF. Please contact support.',
             ], 500);
         }
     }
 
-public function getAllActiveDeliverymanWithOrders()
-{
-    $deliveryMans = $this->userRepository->deliveryMans($filter = [
-        'role' => 'deliveryman',
-    ]);
-    if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
-        abort(403);
+
+
+    public function getAllActiveDeliverymanWithOrders()
+    {
+        $deliveryMans = $this->userRepository->deliveryMans($filter = [
+            'role' => 'deliveryman',
+        ]);
+        if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
+            abort(403);
+        }
+
+        //weekStart from last monday
+        $weekStart = now()->startOfWeek()->subDays(7);
+        $weekEnd = now()->endOfWeek()->subDays(7);
+        //marge weekStart and weekEnd
+        $weekRange = $weekStart->format('Y-m-d') . ' to ' . $weekEnd->format('Y-m-d');
+        $responseData = $deliveryMans->map(function ($deliveryMan) use ($weekRange) {
+            $orders = $deliveryMan->deliveryManOrders;
+            unset($deliveryMan->deliveryManOrders);
+
+            return [
+                'week_range' => $weekRange,
+                'deliveryMan' => UserResource::make($deliveryMan),
+                'orders' => OrderResource::collection($orders),
+                'statistics' => [
+                    'total_commission' => $deliveryMan->total_commission,
+                    'total_discounts' => $deliveryMan->total_discounts ?? 0,
+                    'orders_count' => $orders->count(),
+                    'total' => $orders->sum('total_price') ?? 0,
+                ]
+            ];
+        });
+
+        // return UserResource::collection($deliveryMans);
+
+
+        return $this->successResponse(
+            __('errors.' . ResponseError::SUCCESS, locale: $this->language),
+            $responseData
+        );
     }
 
-    //weekStart from last monday
-    $weekStart = now()->startOfWeek()->subDays(7);
-    $weekEnd = now()->endOfWeek()->subDays(7);
-    //marge weekStart and weekEnd
-    $weekRange = $weekStart->format('Y-m-d') . ' to ' . $weekEnd->format('Y-m-d');
-    $responseData = $deliveryMans->map(function ($deliveryMan) use ($weekRange) {
+    //getDeliveryManDetail
+    public function getDeliveryManDetail($id)
+    {
+        //get delivery man details with orders
+        $deliveryMan = $this->userRepository->deliveryManDetails($id);
+
+       
+        if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
+            abort(403);
+        }
+        if (!$deliveryMan) {
+            return $this->errorResponse(
+                __('errors.' . ResponseError::NOT_FOUND, locale: $this->language)
+            );
+        }
+
+        // Calculate total commission
+        $totalCommission = $deliveryMan->deliveryManOrders->sum('commission_fee');
+
+        // Get orders separately
         $orders = $deliveryMan->deliveryManOrders;
         unset($deliveryMan->deliveryManOrders);
 
-        return [
-            'week_range' => $weekRange,
-            'deliveryMan' => UserResource::make($deliveryMan),
-            'orders' => OrderResource::collection($orders),
-            'statistics' => [
-                'total_commission' => $deliveryMan->total_commission,
-                'total_discounts' => $deliveryMan->total_discounts ?? 0,
-                'orders_count' => $orders->count(),
-                'total' => $orders->sum('total_price') ?? 0,
+        return $this->successResponse(
+            __('errors.' . ResponseError::SUCCESS, locale: $this->language),
+            [
+                'deliveryMan' => UserResource::make($deliveryMan),
+                'orders' => OrderResource::collection($orders),
+                'total_commission' => $totalCommission,
+                'total_discounts' => $deliveryMan->total_discounts ?? 0
             ]
-        ];
-    });
+        );
 
-    // return UserResource::collection($deliveryMans);
-
-
-    return $this->successResponse(
-        __('errors.' . ResponseError::SUCCESS, locale: $this->language),
-        $responseData
-    );
-}
+     
+    }
 
 
+    //downloadDeliveryManInvoice 
+
+    public function downloadDeliveryManInvoice($id)
+    {
+        Log::info('Starting invoice download process for Delivery Man ID: ' . $id);
+        $deliveryMan = $this->userRepository->deliveryManDetails($id);
+
+        if (!$deliveryMan) {
+            return $this->errorResponse(
+                __('errors.' . ResponseError::NOT_FOUND, locale: $this->language)
+            );
+        }
+
+         $totalCommission = $deliveryMan->orders->sum('commission_fee');
+            $orders = $deliveryMan->orders;
+            unset($deliveryMan->orders);
+
+            $logo = Settings::where('key', 'logo')->first()?->value;
+            $lang = $this->language;
+
+            Log::info('Data prepared. Logo path: ' . ($logo ?? 'NULL'));
+
+            // Generate PDF
+            Log::info('Setting PDF options and loading view: shop-invoice');
+            PDF::setOption(['dpi' => 150, 'defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true, 'isRemoteEnabled' => true]);
+
+            $pdf = PDF::loadView('shop-invoice', compact('shop', 'orders', 'totalCommission', 'logo', 'lang'));
+
+        
+
+            return $pdf->download('invoice.pdf');
+    }
 }
