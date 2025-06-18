@@ -347,9 +347,7 @@ class ShopController extends AdminBaseController
     //get shop detail with orders
     public function getAllActiveShopsWithOrders(): JsonResponse
     {
-        Log::info('getAllActiveShopsWithOrders called');
 
-        // Get all active shops with their data
         $shops = $this->repository->getAllActiveShopsWithOrders();
 
         if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
@@ -359,7 +357,6 @@ class ShopController extends AdminBaseController
             ], 403);
         }
 
-        // Transform the data for response
         $responseData = $shops->map(function ($shop) {
             $orders = $shop->orders;
             unset($shop->orders);
@@ -375,9 +372,6 @@ class ShopController extends AdminBaseController
                 ]
             ];
         });
-
-
-
 
         return $this->successResponse(
             __('errors.' . ResponseError::SUCCESS, locale: $this->language),
