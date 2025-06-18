@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
+use Log;
 use Symfony\Component\HttpFoundation\Response;
 
 class InstallController extends RestBaseController
@@ -169,6 +170,10 @@ class InstallController extends RestBaseController
 
     public function licenceCredentials(Request $request): JsonResponse
     {
+        Log::info('Licence credentials', [
+            'purchase_id'   => $request->input('purchase_id'),
+            'purchase_code' => $request->input('purchase_code'),
+        ]);
         $purchaseId   = $request->input('purchase_id');
         $purchaseCode = $request->input('purchase_code');
 

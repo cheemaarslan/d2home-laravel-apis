@@ -376,6 +376,9 @@ class ShopController extends AdminBaseController
             ];
         });
 
+
+
+
         return $this->successResponse(
             __('errors.' . ResponseError::SUCCESS, locale: $this->language),
             $responseData
@@ -573,8 +576,9 @@ class ShopController extends AdminBaseController
 
     public function downloadDeliveryManInvoice($id)
     {
-        Log::info('Starting invoice download process for Delivery Man ID: ' . $id);
         $deliveryMan = $this->userRepository->deliveryManDetails($id);
+
+        Log::info('Starting invoice download process for DeliveryMan ID: ' . $deliveryMan);
 
         if (!$deliveryMan) {
             return $this->errorResponse(
@@ -583,8 +587,10 @@ class ShopController extends AdminBaseController
         }
 
          $totalCommission = $deliveryMan->orders->sum('commission_fee');
-            $orders = $deliveryMan->orders;
+            $orders = $deliveryMan->delivery_man_orders;
             unset($deliveryMan->orders);
+
+            Log::info('orders count: ' . $orders);
 
             $logo = Settings::where('key', 'logo')->first()?->value;
             $lang = $this->language;
@@ -595,7 +601,7 @@ class ShopController extends AdminBaseController
             Log::info('Setting PDF options and loading view: shop-invoice');
             PDF::setOption(['dpi' => 150, 'defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true, 'isRemoteEnabled' => true]);
 
-            $pdf = PDF::loadView('shop-invoice', compact('shop', 'orders', 'totalCommission', 'logo', 'lang'));
+            $pdf = PDF::loadView('deliveryman-invoice', compact('deliveryMan', 'orders', 'totalCommission', 'logo', 'lang'));
 
         
 
