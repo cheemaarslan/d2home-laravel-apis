@@ -225,6 +225,9 @@
         {{-- <div class="red-accent-bar"></div> --}}
 
         <div class="content-padding">
+            <div class="invoice-header">
+                <div class="logo-area">
+                    <img class="logo" src="{{$logo}}" alt="logo" />
 
             <div style="background-color: #f59e0b;">
                 <div class="row align-items-center justify-content-between">
@@ -286,6 +289,10 @@
             </div>
 
        
+
+        <div class="content-padding">
+            <div class="divider"></div>
+        </div>
 
         <div class="content-padding">
             <div class="divider"></div>
