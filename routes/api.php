@@ -871,8 +871,10 @@ Route::get('/translations', [RegisterController::class, 'translations']);    // 
             Route::post('shops/{uuid}/verify',          [Admin\ShopController::class, 'setVerify']);
             Route::post('shops/{uuid}/pos-status',      [Admin\ShopController::class, 'updatePosStatus']);
             Route::get('seller-finance',      [Admin\ShopController::class, 'getAllActiveShopsWithOrders']);
-            Route::get('seller-finance/{uuid}',      [Admin\ShopController::class, 'getShopDetailWithOrders']);
-            Route::get('seller-finance/download-invoice/{uuid}',      [Admin\ShopController::class, 'downloadShopInvoice']);
+Route::post('seller-finance/details', [Admin\ShopController::class, 'getShopDetailWithOrders']);     
+       Route::get('seller-finance/download-invoice/{uuid}',      [Admin\ShopController::class, 'downloadShopInvoice']);
+            Route::post('/seller-finance/{uuid}/update-status', [Admin\ShopController::class, 'updateWeeklyOrderStatus']);
+
             Route::get('deliveryman-finance',      [Admin\ShopController::class, 'getAllActiveDeliverymanWithOrders']);
             Route::get('deliveryman-finance/deliveryman-details/{id}', [Admin\ShopController::class, 'getDeliveryManDetail']);
             Route::get('deliveryman-finance/download-invoice/{id}', [Admin\ShopController::class, 'downloadDeliveryManInvoice']);

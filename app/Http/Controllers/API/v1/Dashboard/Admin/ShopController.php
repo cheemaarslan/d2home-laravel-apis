@@ -3,22 +3,24 @@
 namespace App\Http\Controllers\API\v1\Dashboard\Admin;
 
 use Throwable;
+use Carbon\Carbon;
 use App\Models\Shop;
 use App\Models\User;
 use App\Models\Settings;
 use App\Exports\ShopExport;
 use App\Imports\ShopImport;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use App\Helpers\ResponseError;
 use Barryvdh\DomPDF\Facade\Pdf;
+use App\Models\ShopWeeklyReport;
+
 use Illuminate\Http\JsonResponse;
+
+use Illuminate\Support\Facades\DB;
+
 use Illuminate\Support\Facades\Log;
 use App\Http\Resources\ShopResource;
-
-use App\Repositories\SellerFinanceRepository;
-
-use Illuminate\Http\Response;
-
 use App\Http\Resources\UserResource;
 use Illuminate\Support\Facades\View;
 use Maatwebsite\Excel\Facades\Excel;
@@ -26,7 +28,9 @@ use App\Http\Resources\OrderResource;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 use App\Http\Requests\Shop\StoreRequest;
+use Illuminate\Support\Facades\Validator;
 use App\Http\Requests\FilterParamsRequest;
+use App\Repositories\SellerFinanceRepository;
 use App\Http\Requests\Shop\ImageDeleteRequest;
 use App\Services\Interfaces\ShopServiceInterface;
 use App\Services\ShopServices\ShopActivityService;
@@ -344,12 +348,47 @@ class ShopController extends AdminBaseController
         ]);
     }
 
-    //get shop detail with orders
+    // //get shop detail with orders
+    // public function getAllActiveShopsWithOrders(): JsonResponse
+    // {
+
+    //     $shops = $this->repository->getAllActiveShopsWithOrders();
+
+    //     if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
+    //         return response()->json([
+    //             'message' => 'Unauthorized access: Invalid or inactive cache key',
+    //             'code' => 403
+    //         ], 403);
+    //     }
+
+    //     $responseData = $shops->map(function ($shop) {
+    //         $orders = $shop->orders;
+    //         unset($shop->orders);
+
+    //         return [
+    //             'shop' => ShopResource::make($shop),
+    //             'orders' => OrderResource::collection($orders),
+    //             'statistics' => [
+    //                 'total_commission' => $shop->total_commission,
+    //                 'total_discounts' => $shop->total_discounts ?? 0,
+    //                 'orders_count' => $orders->count(),
+    //                 'total' => $orders->sum('total_price') ?? 0,
+    //             ]
+    //         ];
+    //     });
+
+    //     return $this->successResponse(
+    //         __('errors.' . ResponseError::SUCCESS, locale: $this->language),
+    //         $responseData
+    //     );
+    // }
+
+
+
     public function getAllActiveShopsWithOrders(): JsonResponse
     {
 
-        $shops = $this->repository->getAllActiveShopsWithOrders();
-
+        // Cache-based authorization check
         if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
             return response()->json([
                 'message' => 'Unauthorized access: Invalid or inactive cache key',
@@ -357,21 +396,154 @@ class ShopController extends AdminBaseController
             ], 403);
         }
 
-        $responseData = $shops->map(function ($shop) {
-            $orders = $shop->orders;
-            unset($shop->orders);
+        // Determine current week range (Monday to Sunday)
+        $currentWeekStart = Carbon::now()->startOfWeek(Carbon::MONDAY);
+        $currentWeekEnd = $currentWeekStart->copy()->endOfWeek(Carbon::SUNDAY);
+        $currentWeekRange = $currentWeekStart->format('Y-m-d') . ' to ' . $currentWeekEnd->format('Y-m-d');
+
+        // Check if weekly_orders has been initialized
+        $isInitialized = Cache::get('weekly_orders_initialized', false);
+
+        // Fetch active shops
+        $shops = $this->repository->getAllActiveShopsWithOrders();
+
+        // Process shops
+        $responseData = $shops->map(function ($shop) use ($isInitialized, $currentWeekStart, $currentWeekEnd, $currentWeekRange) {
+
+            if (!$isInitialized) {
+                // First run: Process all orders
+                $orders = $shop->orders;
+
+                $weeklyOrders = $orders->groupBy(function ($order) {
+                    $date = Carbon::parse($order->created_at);
+                    $startOfWeek = $date->startOfWeek(Carbon::MONDAY);
+                    $endOfWeek = $startOfWeek->copy()->endOfWeek(Carbon::SUNDAY);
+                    $weekRange = $startOfWeek->format('Y-m-d') . ' to ' . $endOfWeek->format('Y-m-d');
+
+                    return $weekRange;
+                })->map(function ($weekOrders, $weekRange) use ($shop) {
+
+                    $orderIds = $weekOrders->pluck('id')->toArray();
+                    $totalPrice = $weekOrders->sum('total_price') ?? 0;
+                    $ordersCount = $weekOrders->count();
+                    $totalCommission = $weekOrders->sum('commission_fee') ?? 0; // Use commission_fee
+                    $totalDiscounts = $weekOrders->sum('total_discount') ?? 0; // Use total_discount
+
+
+
+                    // Save to weekly_orders
+                    try {
+                        DB::transaction(function () use ($shop, $weekRange, $orderIds, $totalPrice, $ordersCount, $totalCommission, $totalDiscounts) {
+                            ShopWeeklyReport::updateOrCreate(
+                                [
+                                    'shop_id' => $shop->id,
+                                    'week_identifier' => $weekRange,
+                                ],
+                                [
+                                    'order_ids' => json_encode($orderIds),
+                                    'total_price' => $totalPrice,
+                                    'orders_count' => $ordersCount,
+                                    'total_commission' => $totalCommission,
+                                    'total_discounts' => $totalDiscounts,
+                                ]
+                            );
+                        });
+                    } catch (\Exception $e) {
+
+                        throw $e;
+                    }
+
+                    return [
+                        'week_range' => $weekRange,
+                        'orders' => OrderResource::collection($weekOrders),
+                        'statistics' => [
+                            'orders_count' => $ordersCount,
+                            'total_price' => $totalPrice,
+                            'total_commission' => $totalCommission,
+                            'total_discounts' => $totalDiscounts,
+                        ],
+                    ];
+                })->values();
+
+                // Mark as initialized (no expiration)
+                Cache::forever('weekly_orders_initialized', true);
+            } else {
+                // Subsequent runs: Process only current week's orders
+
+                $currentWeekOrders = $shop->orders->filter(function ($order) use ($currentWeekStart, $currentWeekEnd) {
+                    $isInWeek = Carbon::parse($order->created_at)->between($currentWeekStart, $currentWeekEnd);
+
+                    return $isInWeek;
+                });
+
+                // Save or update current week's orders
+                if ($currentWeekOrders->isNotEmpty()) {
+                    $orderIds = $currentWeekOrders->pluck('id')->toArray();
+                    $totalPrice = $currentWeekOrders->sum('total_price') ?? 0;
+                    $ordersCount = $currentWeekOrders->count();
+                    $totalCommission = $currentWeekOrders->sum('commission_fee') ?? 0;
+                    $totalDiscounts = $currentWeekOrders->sum('total_discount') ?? 0;
+
+
+
+                    try {
+                        DB::transaction(function () use ($shop, $currentWeekRange, $orderIds, $totalPrice, $ordersCount, $totalCommission, $totalDiscounts) {
+                            ShopWeeklyReport::updateOrCreate(
+                                [
+                                    'shop_id' => $shop->id,
+                                    'week_identifier' => $currentWeekRange,
+                                ],
+                                [
+                                    'order_ids' => json_encode($orderIds),
+                                    'total_price' => $totalPrice,
+                                    'orders_count' => $ordersCount,
+                                    'total_commission' => $totalCommission,
+                                    'total_discounts' => $totalDiscounts,
+                                ]
+                            );
+                        });
+                    } catch (\Exception $e) {
+
+                        throw $e;
+                    }
+                }
+
+                // Fetch all weekly orders from database
+                $weeklyOrders = ShopWeeklyReport::where('shop_id', $shop->id)
+                    ->when(request('status'), function ($query, $status) {
+                        return $query->where('status', $status);
+                    })
+                    ->get()
+                    ->map(function ($weeklyOrder) use ($shop, $currentWeekRange) {
+
+                        $orders = $weeklyOrder->week_identifier === $currentWeekRange
+                            ? $shop->orders->whereIn('id', json_decode($weeklyOrder->order_ids, true) ?: [])
+                            : collect([]);
+
+                        return [
+                            'week_range' => $weeklyOrder->week_identifier,
+                            'orders' => OrderResource::collection($orders),
+                            'statistics' => [
+                                'orders_count' => $weeklyOrder->orders_count,
+                                'total_price' => $weeklyOrder->total_price,
+                                'total_commission' => $weeklyOrder->total_commission ?? 0,
+                                'total_discounts' => $weeklyOrder->total_discounts ?? 0,
+                            ],
+                            'record_id' => $weeklyOrder->id,
+                            'status' => $weeklyOrder->status,
+                        ];
+                    })->values();
+                Log::info('Weekly orders fetched from database', ['shop_id' => $shop->id, 'week_count' => $weeklyOrders->count()]);
+            }
+
+            unset($shop->orders); // Remove orders to avoid redundancy
 
             return [
                 'shop' => ShopResource::make($shop),
-                'orders' => OrderResource::collection($orders),
-                'statistics' => [
-                    'total_commission' => $shop->total_commission,
-                    'total_discounts' => $shop->total_discounts ?? 0,
-                    'orders_count' => $orders->count(),
-                    'total' => $orders->sum('total_price') ?? 0,
-                ]
+                'weekly_orders' => $weeklyOrders,
             ];
         });
+
 
         return $this->successResponse(
             __('errors.' . ResponseError::SUCCESS, locale: $this->language),
@@ -379,10 +551,115 @@ class ShopController extends AdminBaseController
         );
     }
 
-    public function getShopDetailWithOrders(string $uuid): JsonResponse
+
+
+    public function updateWeeklyOrderStatus(Request $request, $shopUuid)
     {
+        Log::info('updateWeeklyOrderStatus started', [
+            'shop_uuid' => $shopUuid,
+            'timestamp' => now()->toDateTimeString(),
+            'request_data' => $request->all()
+        ]);
+        try {
+            // Validate request
+            $validator = Validator::make($request->all(), [
+                'record_id' => 'required|integer|exists:shop_weekly_reports,id',
+                'status' => 'required|string|in:paid,unpaid,canceled'
+            ]);
+
+            if ($validator->fails()) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Validation failed',
+                    'errors' => $validator->errors()
+                ], 422);
+            }
+
+            // Find the shop by UUID
+            $shop = Shop::where('uuid', $shopUuid)->first();
+            if (!$shop) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Shop not found'
+                ], 404);
+            }
+
+            // Find the weekly order
+            $weeklyOrder = ShopWeeklyReport::where('id', $request->record_id)
+                ->where('shop_id', $shop->id)
+                ->first();
+
+            if (!$weeklyOrder) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Weekly order not found or does not belong to this shop'
+                ], 404);
+            }
+
+            // Update status
+            $weeklyOrder->status = $request->status;
+            $weeklyOrder->save();
+
+            // Log the update
+            Log::info('Weekly order status updated', [
+                'record_id' => $weeklyOrder->id,
+                'shop_id' => $shop->id,
+                'new_status' => $request->status
+            ]);
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Weekly order status updated successfully',
+                'data' => [
+                    'record_id' => $weeklyOrder->id,
+                    'status' => $weeklyOrder->status
+                ]
+            ], 200);
+        } catch (\Exception $e) {
+            Log::error('Error updating weekly order status', [
+                'error' => $e->getMessage(),
+                'shop_uuid' => $shopUuid,
+                'request' => $request->all()
+            ]);
+
+            return response()->json([
+                'status' => false,
+                'message' => 'Failed to update weekly order status',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+
+
+
+    public function getShopDetailWithOrders(Request $request)
+    {
+        log::info('getShopDetailWithOrders started', [
+            'request_data' => $request->all(),
+            'timestamp' => now()->toDateTimeString()
+        ]);
+        // Get record_id from request
+        $recordId = $request->input('record_id');
+
+        //get record from ShopWeeklyReport 
+        $weeklyReport = ShopWeeklyReport::find($recordId);
+        if (!$weeklyReport) {
+            return $this->onErrorResponse([
+                'code'      => ResponseError::ERROR_404,
+                'message'   => __('errors.' . ResponseError::ERROR_404, locale: $this->language)
+            ]);
+        }
+        // Get shop UUID from the weekly report
+        $uuid = $weeklyReport->shop->id;
+        Log::info('Fetching shop details with orders', [
+            'record_id' => $recordId,
+            'shop_uuid' => $uuid,
+            'timestamp' => now()->toDateTimeString()
+        ]);
         // Get shop with relationships (including orders)
         $shop = $this->repository->shopDetailsWithOrders($uuid);
+
 
         if (empty($shop)) {
             return $this->onErrorResponse([
@@ -391,28 +668,37 @@ class ShopController extends AdminBaseController
             ]);
         }
 
-
-
         if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
             abort(403);
         }
+        //get order ids from weekly report
+        $orderIds = json_decode($weeklyReport->order_ids, true) ?: [];
+        // Filter orders based on the order IDs from the weekly report
+$orders = $shop->orders->whereIn('id', $orderIds)->values(); // Add values() to reset keys and ensure array
 
         // Calculate total commission
-        $totalCommission = $shop->orders->sum('commission_fee');
+        $totalCommission = $orders->sum('commission_fee');
+        $totalDiscount = $orders->sum('discount_amount') ?? 0;
 
-        // Get orders separately
-        $orders = $shop->orders;
 
         // Remove orders from shop object to avoid duplication in response
-        unset($shop->orders);
 
+        //add log for debugging
+        Log::info('Shop detail with orders fetched', [
+            'shop' => $shop,
+            'orders_count' => $orders->count(),
+            'total_commission' => $totalCommission,
+            'total_discounts' => $totalDiscount,
+            'record_id' => $recordId
+        ]);
         return $this->successResponse(
             __('errors.' . ResponseError::SUCCESS, locale: $this->language),
             [
+                'recordId' => $recordId,
                 'shop' => ShopResource::make($shop),
-                'orders' => $orders,
+       'orders' => $orders,
                 'total_commission' => $totalCommission,
-                'total_discounts' => $shop->total_discounts
+                'total_discounts' => $totalDiscount
             ]
         );
     }
@@ -421,6 +707,7 @@ class ShopController extends AdminBaseController
 
     public function downloadShopInvoice(string $uuid): Response|JsonResponse
     {
+
         Log::info('Starting invoice download process for Shop UUID: ' . $uuid);
 
         if (app()->bound('debugbar')) {
@@ -428,26 +715,18 @@ class ShopController extends AdminBaseController
         }
 
         try {
-            // Fetch shop with orders
-            Log::info('Fetching shop details from repository...');
+
             $shop = $this->repository->shopDetailsWithOrders($uuid);
 
             if (empty($shop)) {
                 Log::warning('Shop not found for UUID: ' . $uuid);
                 return response()->json(['message' => 'Invoice target shop not found.'], 404);
             }
-            Log::info('Shop data fetched successfully for: ' . $shop->name);
 
-            // Authorization check
-            Log::info('Checking authorization...');
             if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
-                Log::warning('Unauthorized download attempt for UUID: ' . $uuid);
+
                 return response()->json(['message' => 'You are not authorized to perform this action.'], 403);
             }
-            Log::info('Authorization successful.');
-
-            // Prepare data
-            Log::info('Preparing data for PDF view...');
             $totalCommission = $shop->orders->sum('commission_fee');
             $orders = $shop->orders;
             unset($shop->orders);
@@ -455,31 +734,13 @@ class ShopController extends AdminBaseController
             $logo = Settings::where('key', 'logo')->first()?->value;
             $lang = $this->language;
 
-            Log::info('Data prepared. Logo path: ' . ($logo ?? 'NULL'));
-
-            // Generate PDF
-            Log::info('Setting PDF options and loading view: shop-invoice');
             PDF::setOption(['dpi' => 150, 'defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true, 'isRemoteEnabled' => true]);
 
             $pdf = PDF::loadView('shop-invoice', compact('shop', 'orders', 'totalCommission', 'logo', 'lang'));
 
-            Log::info('PDF view loaded successfully. Generating PDF...');
-
-            // Debug headers before sending
-            Log::info('Returning PDF with headers:', [
-                'Content-Type' => 'application/pdf',
-                'Content-Disposition' => 'attachment; filename="shop-invoice-' . $uuid . '.pdf"',
-            ]);
 
             return $pdf->download('invoice.pdf');
         } catch (\Exception $e) {
-            Log::error('CRITICAL: PDF generation failed.', [
-                'uuid' => $uuid,
-                'error_message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-                'trace' => $e->getTraceAsString(),
-            ]);
 
             return response()->json([
                 'message' => 'The server encountered an error while generating the PDF. Please contact support.',
@@ -535,7 +796,7 @@ class ShopController extends AdminBaseController
         //get delivery man details with orders
         $deliveryMan = $this->userRepository->deliveryManDetails($id);
 
-       
+
         if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
             abort(403);
         }
@@ -561,8 +822,6 @@ class ShopController extends AdminBaseController
                 'total_discounts' => $deliveryMan->total_discounts ?? 0
             ]
         );
-
-     
     }
 
 
@@ -580,25 +839,25 @@ class ShopController extends AdminBaseController
             );
         }
 
-         $totalCommission = $deliveryMan->orders->sum('commission_fee');
-            $orders = $deliveryMan->delivery_man_orders;
-            unset($deliveryMan->orders);
+        $totalCommission = $deliveryMan->orders->sum('commission_fee');
+        $orders = $deliveryMan->delivery_man_orders;
+        unset($deliveryMan->orders);
 
-            Log::info('orders count: ' . $orders);
+        Log::info('orders count: ' . $orders);
 
-            $logo = Settings::where('key', 'logo')->first()?->value;
-            $lang = $this->language;
+        $logo = Settings::where('key', 'logo')->first()?->value;
+        $lang = $this->language;
 
-            Log::info('Data prepared. Logo path: ' . ($logo ?? 'NULL'));
+        Log::info('Data prepared. Logo path: ' . ($logo ?? 'NULL'));
 
-            // Generate PDF
-            Log::info('Setting PDF options and loading view: shop-invoice');
-            PDF::setOption(['dpi' => 150, 'defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true, 'isRemoteEnabled' => true]);
+        // Generate PDF
+        Log::info('Setting PDF options and loading view: shop-invoice');
+        PDF::setOption(['dpi' => 150, 'defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true, 'isRemoteEnabled' => true]);
 
-            $pdf = PDF::loadView('deliveryman-invoice', compact('deliveryMan', 'orders', 'totalCommission', 'logo', 'lang'));
+        $pdf = PDF::loadView('deliveryman-invoice', compact('deliveryMan', 'orders', 'totalCommission', 'logo', 'lang'));
 
-        
 
-            return $pdf->download('invoice.pdf');
+
+        return $pdf->download('invoice.pdf');
     }
 }
