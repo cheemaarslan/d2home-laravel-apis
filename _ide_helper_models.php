@@ -1473,6 +1473,40 @@ namespace App\Models{
 
 namespace App\Models{
 /**
+ * App\Models\DeliveryManWeeklyReport
+ *
+ * @property int $id
+ * @property int $delivery_man_id
+ * @property string $week_identifier
+ * @property array $order_ids
+ * @property float $total_price
+ * @property int $orders_count
+ * @property float $total_commission
+ * @property float $total_discounts
+ * @property \Illuminate\Support\Carbon|null $created_at
+ * @property \Illuminate\Support\Carbon|null $updated_at
+ * @property string|null $status
+ * @property-read \App\Models\User $deliveryMan
+ * @method static \Illuminate\Database\Eloquent\Builder|DeliveryManWeeklyReport newModelQuery()
+ * @method static \Illuminate\Database\Eloquent\Builder|DeliveryManWeeklyReport newQuery()
+ * @method static \Illuminate\Database\Eloquent\Builder|DeliveryManWeeklyReport query()
+ * @method static \Illuminate\Database\Eloquent\Builder|DeliveryManWeeklyReport whereCreatedAt($value)
+ * @method static \Illuminate\Database\Eloquent\Builder|DeliveryManWeeklyReport whereDeliveryManId($value)
+ * @method static \Illuminate\Database\Eloquent\Builder|DeliveryManWeeklyReport whereId($value)
+ * @method static \Illuminate\Database\Eloquent\Builder|DeliveryManWeeklyReport whereOrderIds($value)
+ * @method static \Illuminate\Database\Eloquent\Builder|DeliveryManWeeklyReport whereOrdersCount($value)
+ * @method static \Illuminate\Database\Eloquent\Builder|DeliveryManWeeklyReport whereStatus($value)
+ * @method static \Illuminate\Database\Eloquent\Builder|DeliveryManWeeklyReport whereTotalCommission($value)
+ * @method static \Illuminate\Database\Eloquent\Builder|DeliveryManWeeklyReport whereTotalDiscounts($value)
+ * @method static \Illuminate\Database\Eloquent\Builder|DeliveryManWeeklyReport whereTotalPrice($value)
+ * @method static \Illuminate\Database\Eloquent\Builder|DeliveryManWeeklyReport whereUpdatedAt($value)
+ * @method static \Illuminate\Database\Eloquent\Builder|DeliveryManWeeklyReport whereWeekIdentifier($value)
+ */
+	class DeliveryManWeeklyReport extends \Eloquent {}
+}
+
+namespace App\Models{
+/**
  * App\Models\DeliveryPoint
  *
  * @property int $id
@@ -4633,13 +4667,15 @@ namespace App\Models{
  * @property string $week_identifier
  * @property mixed $order_ids
  * @property string $total_price
- * @property int $orders_count
+ * @property-read int|null $orders_count
  * @property string $total_commission
  * @property string $total_discounts
  * @property \Illuminate\Support\Carbon|null $created_at
  * @property \Illuminate\Support\Carbon|null $updated_at
  * @property string|null $status
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\Order> $orders
  * @property-read \App\Models\Shop $shop
+ * @method static \Illuminate\Database\Eloquent\Builder|ShopWeeklyReport byShopAndWeek($shopId, $weekIdentifier)
  * @method static \Illuminate\Database\Eloquent\Builder|ShopWeeklyReport newModelQuery()
  * @method static \Illuminate\Database\Eloquent\Builder|ShopWeeklyReport newQuery()
  * @method static \Illuminate\Database\Eloquent\Builder|ShopWeeklyReport query()

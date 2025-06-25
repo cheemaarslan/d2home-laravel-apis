@@ -878,6 +878,8 @@ Route::post('seller-finance/details', [Admin\ShopController::class, 'getShopDeta
             Route::get('deliveryman-finance',      [Admin\ShopController::class, 'getAllActiveDeliverymanWithOrders']);
             Route::get('deliveryman-finance/deliveryman-details/{id}', [Admin\ShopController::class, 'getDeliveryManDetail']);
             Route::get('deliveryman-finance/download-invoice/{id}', [Admin\ShopController::class, 'downloadDeliveryManInvoice']);
+            Route::post('deliveryman-finance/{deliverymanId}/status', [Admin\ShopController::class, 'upDateDeliveryManWeeklyRecordStatus']);
+            
 
 
 

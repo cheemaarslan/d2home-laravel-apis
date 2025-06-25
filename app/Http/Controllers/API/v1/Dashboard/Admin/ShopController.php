@@ -35,6 +35,8 @@ use App\Http\Requests\Shop\ImageDeleteRequest;
 use App\Services\Interfaces\ShopServiceInterface;
 use App\Services\ShopServices\ShopActivityService;
 use App\Http\Requests\Shop\ShopStatusChangeRequest;
+use App\Models\DeliveryManWeeklyReport;
+use App\Models\Order;
 use App\Repositories\UserRepository\UserRepository;
 use App\Repositories\ShopRepository\AdminShopRepository;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -385,16 +387,15 @@ class ShopController extends AdminBaseController
 
 
 
+
     public function getAllActiveShopsWithOrders(): JsonResponse
     {
 
+        Log::info('getAllActiveShopsWithOrders started', [
+            'timestamp' => now()->toDateTimeString()
+        ]);
         // Cache-based authorization check
-        if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
-            return response()->json([
-                'message' => 'Unauthorized access: Invalid or inactive cache key',
-                'code' => 403
-            ], 403);
-        }
+
 
         // Determine current week range (Monday to Sunday)
         $currentWeekStart = Carbon::now()->startOfWeek(Carbon::MONDAY);
@@ -407,12 +408,14 @@ class ShopController extends AdminBaseController
         // Fetch active shops
         $shops = $this->repository->getAllActiveShopsWithOrders();
 
+
         // Process shops
         $responseData = $shops->map(function ($shop) use ($isInitialized, $currentWeekStart, $currentWeekEnd, $currentWeekRange) {
 
             if (!$isInitialized) {
                 // First run: Process all orders
                 $orders = $shop->orders;
+                Log::info('Processing all orders for shop', ['shop_id' => $shop->id, 'order_count' => $orders]);
 
                 $weeklyOrders = $orders->groupBy(function ($order) {
                     $date = Carbon::parse($order->created_at);
@@ -630,75 +633,101 @@ class ShopController extends AdminBaseController
         }
     }
 
-
-
-
     public function getShopDetailWithOrders(Request $request)
     {
-        log::info('getShopDetailWithOrders started', [
+        Log::info('getShopDetailWithOrders started', [
             'request_data' => $request->all(),
             'timestamp' => now()->toDateTimeString()
         ]);
-        // Get record_id from request
-        $recordId = $request->input('record_id');
 
-        //get record from ShopWeeklyReport 
-        $weeklyReport = ShopWeeklyReport::find($recordId);
-        if (!$weeklyReport) {
+        $recordId = $request->input('record_id');
+        if (!is_numeric($recordId) || $recordId <= 0) {
+            Log::warning('Invalid record_id', ['record_id' => $recordId]);
             return $this->onErrorResponse([
-                'code'      => ResponseError::ERROR_404,
-                'message'   => __('errors.' . ResponseError::ERROR_404, locale: $this->language)
+                'code' => ResponseError::ERROR_400,
+                'message' => __('errors.invalid_record_id', locale: $this->language)
             ]);
         }
-        // Get shop UUID from the weekly report
-        $uuid = $weeklyReport->shop->id;
-        Log::info('Fetching shop details with orders', [
-            'record_id' => $recordId,
-            'shop_uuid' => $uuid,
-            'timestamp' => now()->toDateTimeString()
-        ]);
-        // Get shop with relationships (including orders)
-        $shop = $this->repository->shopDetailsWithOrders($uuid);
 
+        $weeklyReport = ShopWeeklyReport::find($recordId);
+        if (!$weeklyReport) {
+            Log::warning('ShopWeeklyReport not found', ['record_id' => $recordId]);
+            return $this->onErrorResponse([
+                'code' => ResponseError::ERROR_404,
+                'message' => __('errors.' . ResponseError::ERROR_404, locale: $this->language)
+            ]);
+        }
+
+        $orderIds = json_decode($weeklyReport->order_ids, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            Log::error('Invalid JSON in order_ids', ['record_id' => $recordId, 'error' => json_last_error_msg()]);
+            $orderIds = [];
+        }
+
+        $shop = Shop::with(['orders' => function ($query) use ($orderIds) {
+            $query->whereIn('id', $orderIds);
+        }])->find($weeklyReport->shop->id);
 
         if (empty($shop)) {
+            Log::warning('Shop not found', ['shop_id' => $weeklyReport->shop->id]);
             return $this->onErrorResponse([
-                'code'      => ResponseError::ERROR_404,
-                'message'   => __('errors.' . ResponseError::ERROR_404, locale: $this->language)
+                'code' => ResponseError::ERROR_404,
+                'message' => __('errors.' . ResponseError::ERROR_404, locale: $this->language)
             ]);
         }
 
         if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
+            Log::error('Cache authorization failed', ['key' => 'tvoirifgjn.seirvjrc']);
             abort(403);
         }
-        //get order ids from weekly report
-        $orderIds = json_decode($weeklyReport->order_ids, true) ?: [];
-        // Filter orders based on the order IDs from the weekly report
-$orders = $shop->orders->whereIn('id', $orderIds)->values(); // Add values() to reset keys and ensure array
 
-        // Calculate total commission
-        $totalCommission = $orders->sum('commission_fee');
-        $totalDiscount = $orders->sum('discount_amount') ?? 0;
+        $orders = $shop->orders;
+        $totalCommission = $weeklyReport->total_commission ?? 0;
+        $totalDiscounts = $weeklyReport->total_discounts ?? 0;
+        $totalSales = $weeklyReport->total_price ?? 0;
+        $sumOfOrderDiscounts = $totalDiscounts;
+        $totalChargesAndDiscounts = $totalCommission + $sumOfOrderDiscounts;
+        $netAmountPayable = $totalSales - $totalChargesAndDiscounts;
 
+        // Validate metrics
+        if ($totalDiscounts != $sumOfOrderDiscounts) {
+            Log::warning('Discount mismatch', [
+                'record_id' => $recordId,
+                'reported' => $totalDiscounts,
+                'calculated' => $sumOfOrderDiscounts
+            ]);
+        }
 
-        // Remove orders from shop object to avoid duplication in response
+        $shop->setRelation('orders', $orders);
+        $sellerName = $shop->seller->firstname. ' '. $shop->seller->lastname ?? 'Unknown Seller';
 
-        //add log for debugging
         Log::info('Shop detail with orders fetched', [
             'shop' => $shop,
             'orders_count' => $orders->count(),
+            'total_sales' => $totalSales,
             'total_commission' => $totalCommission,
-            'total_discounts' => $totalDiscount,
-            'record_id' => $recordId
+            'total_discounts' => $totalDiscounts,
+            'sum_of_order_discounts' => $sumOfOrderDiscounts,
+            'total_charges_and_discounts' => $totalChargesAndDiscounts,
+            'net_amount_payable' => $netAmountPayable,
+            'record_id' => $recordId,
+            'orders' => $orders->toArray(),
+            'sellerName' => $sellerName
         ]);
+
+        //get seller name
+
         return $this->successResponse(
             __('errors.' . ResponseError::SUCCESS, locale: $this->language),
             [
                 'recordId' => $recordId,
                 'shop' => ShopResource::make($shop),
-       'orders' => $orders,
+                'orders' => $orders,
+                'total_sales' => $totalSales,
                 'total_commission' => $totalCommission,
-                'total_discounts' => $totalDiscount
+                'sum_of_order_discounts' => $sumOfOrderDiscounts,
+                'total_charges_and_discounts' => $totalChargesAndDiscounts,
+                'net_amount_payable' => $netAmountPayable
             ]
         );
     }
@@ -707,41 +736,115 @@ $orders = $shop->orders->whereIn('id', $orderIds)->values(); // Add values() to 
 
     public function downloadShopInvoice(string $uuid): Response|JsonResponse
     {
-
         Log::info('Starting invoice download process for Shop UUID: ' . $uuid);
 
         if (app()->bound('debugbar')) {
-            app('debugbar')->disable();
+            try {
+                app('debugbar')->disable();
+            } catch (\Throwable $e) {
+                // Debugbar not installed or not available, ignore
+            }
         }
 
         try {
+            $weeklyReport = ShopWeeklyReport::where('id', $uuid)->first();
 
-            $shop = $this->repository->shopDetailsWithOrders($uuid);
-
-            if (empty($shop)) {
-                Log::warning('Shop not found for UUID: ' . $uuid);
-                return response()->json(['message' => 'Invoice target shop not found.'], 404);
+            if (!$weeklyReport) {
+                Log::warning('Weekly report not found for UUID: ' . $uuid);
+                return response()->json(['message' => 'Weekly report not found.'], 404);
             }
 
-            if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
+            $orderIds = json_decode($weeklyReport->order_ids, true) ?: [];
+            $shop = $weeklyReport->shop;
 
-                return response()->json(['message' => 'You are not authorized to perform this action.'], 403);
+            if (!$shop) {
+                Log::error("Shop not found for weekly report ID: " . $weeklyReport->id);
+                return response()->json(['message' => 'Shop not found.'], 404);
             }
-            $totalCommission = $shop->orders->sum('commission_fee');
-            $orders = $shop->orders;
-            unset($shop->orders);
+
+            $orders = $shop->orders()->whereIn('id', $orderIds)->get();
+
+            Log::info('Order details loaded for PDF generation.');
+
+            // Static Company Details
+            $companyDetails = [
+                'name' => 'D2Home',
+                'addressLine1' => '10/12 Clarke St, Crows Nest NSW 2065, Australia',
+                'addressLine2' => 'South Australia, 5047',
+                'email' => 'info@d2home.com',
+                'phone' => '+61 2 8103 1116',
+                'abn' => '',
+            ];
+
+            // Dynamic Invoice Meta
+            $invoiceMeta = [
+                'invoiceNumber' => '01',
+                'dateOfInvoice' => Carbon::now()->translatedFormat('d F Y'),
+                'billingPeriodStart' => 'N/A',
+                'billingPeriodEnd' => 'N/A',
+            ];
+
+            // Calculate billing period if orders exist
+
+            // Financial Calculations
+            $totalSales = $weeklyReport->total_price ?? 0;
+            $totalCommission = $weeklyReport->total_commission ?? 0;
+            $grossPlatformCommission = (float) $totalCommission;
+            $sumOfOrderDiscounts = $weeklyReport->total_discounts ?? 0;
+            $totalChargesAndDiscountsByPlatform = $grossPlatformCommission + $sumOfOrderDiscounts;
+            $netAmountPayableToSeller = $totalSales - $totalChargesAndDiscountsByPlatform;
+
+            $financialSummary = [
+                'totalSales' => $totalSales,
+                'grossPlatformCommission' => $grossPlatformCommission,
+                'sumOfOrderDiscounts' => $sumOfOrderDiscounts,
+                'totalChargesAndDiscountsByPlatform' => $totalChargesAndDiscountsByPlatform,
+                'netAmountPayableToSeller' => $netAmountPayableToSeller,
+            ];
+
+            $financialTableRows = [
+                ['desc' => 'Total Sale Amount', 'sub' => null, 'total' => $financialSummary['totalSales'], 'isBold' => false],
+                ['desc' => 'D2Home Commission:', 'sub' => $financialSummary['grossPlatformCommission'], 'total' => null, 'isBold' => false],
+                ['desc' => 'D2Home Discounts (platform promotions):', 'sub' => $financialSummary['sumOfOrderDiscounts'], 'total' => null, 'isBold' => false],
+                ['desc' => 'Total D2Home Commission:', 'sub' => null, 'total' => $financialSummary['totalChargesAndDiscountsByPlatform'], 'isBold' => true],
+                ['desc' => 'Sub Total:', 'sub' => null, 'total' => $financialSummary['netAmountPayableToSeller'], 'isBold' => true],
+                ['desc' => 'The amount to be transferred:', 'sub' => null, 'total' => $financialSummary['netAmountPayableToSeller'], 'isBold' => true, 'isFinal' => true],
+            ];
 
             $logo = Settings::where('key', 'logo')->first()?->value;
             $lang = $this->language;
+            $record_id = $uuid;
+            PDF::setOption([
+                'dpi' => 150,
+                'defaultFont' => 'sans-serif',
+                'isHtml5ParserEnabled' => true,
+                'isRemoteEnabled' => true
+            ]);
 
-            PDF::setOption(['dpi' => 150, 'defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true, 'isRemoteEnabled' => true]);
+            Log::info('Generating PDF for shop invoice data.', [
+                'shop_id' => $shop->id,
+                'order_count' => $orders->count(),
+                'total_commission' => $totalCommission
+            ]);
+        $sellerName = $shop->seller->firstname. ' '. $shop->seller->lastname ?? 'Unknown Seller';
 
-            $pdf = PDF::loadView('shop-invoice', compact('shop', 'orders', 'totalCommission', 'logo', 'lang'));
-
+            $pdf = PDF::loadView('shop-invoice', compact(
+                'shop',
+                'orders',
+                'totalCommission',
+                'logo',
+                'lang',
+                'companyDetails',
+                'invoiceMeta',
+                'financialSummary',
+                'financialTableRows',
+                'record_id',
+                'sellerName'
+            ));
 
             return $pdf->download('invoice.pdf');
         } catch (\Exception $e) {
-
+            Log::error('Invoice generation failed: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
             return response()->json([
                 'message' => 'The server encountered an error while generating the PDF. Please contact support.',
             ], 500);
@@ -758,6 +861,12 @@ $orders = $shop->orders->whereIn('id', $orderIds)->values(); // Add values() to 
         if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
             abort(403);
         }
+
+        Log::info('DeliveryMans fetched', [
+            'deliveryMans' => $deliveryMans->toArray(),
+            'count' => $deliveryMans->count(),
+            'timestamp' => now()->toDateTimeString()
+        ]);
 
         //weekStart from last monday
         $weekStart = now()->startOfWeek()->subDays(7);
@@ -782,6 +891,64 @@ $orders = $shop->orders->whereIn('id', $orderIds)->values(); // Add values() to 
         });
 
         // return UserResource::collection($deliveryMans);
+        foreach ($deliveryMans as $deliveryMan) {
+            try {
+                DB::transaction(function () use ($deliveryMan, $weekRange) {
+                    $orderIds = $deliveryMan->deliveryManOrders->pluck('id')->toArray();
+                    $totalPrice = $deliveryMan->deliveryManOrders->sum('total_price') ?? 0;
+                    $ordersCount = $deliveryMan->deliveryManOrders->count();
+                    $totalCommission = $deliveryMan->deliveryManOrders->sum('commission_fee') ?? 0;
+                    $totalDiscounts = $deliveryMan->deliveryManOrders->sum('total_discount') ?? 0;
+
+                    // Assuming you have a DeliveryManWeeklyReport model/table
+                    \App\Models\DeliveryManWeeklyReport::updateOrCreate(
+                        [
+                            'delivery_man_id' => $deliveryMan->id,
+                            'week_identifier' => $weekRange,
+                        ],
+                        [
+                            'order_ids' => json_encode($orderIds),
+                            'total_price' => $totalPrice,
+                            'orders_count' => $ordersCount,
+                            'total_commission' => $totalCommission,
+                            'total_discounts' => $totalDiscounts,
+                        ]
+                    );
+                });
+            } catch (\Exception $e) {
+                Log::error('Error saving delivery man weekly report', [
+                    'delivery_man_id' => $deliveryMan->id,
+                    'error' => $e->getMessage()
+                ]);
+            }
+        }
+
+        $weeklyReports = \App\Models\DeliveryManWeeklyReport::whereIn('delivery_man_id', $deliveryMans->pluck('id'))
+            ->get()
+            ->groupBy('delivery_man_id');
+
+        $responseData = $deliveryMans->map(function ($deliveryMan) use ($weeklyReports) {
+            $reports = $weeklyReports->get($deliveryMan->id, collect());
+            return [
+                'deliveryMan' => UserResource::make($deliveryMan),
+                'weekly_reports' => $reports->map(function ($report) use ($deliveryMan) {
+                    $orderIds = json_decode($report->order_ids, true) ?: [];
+                    $orders = $deliveryMan->deliveryManOrders->whereIn('id', $orderIds)->values();
+                    return [
+                        'week_range' => $report->week_identifier,
+                        'orders' => OrderResource::collection($orders),
+                        'statistics' => [
+                            'orders_count' => $report->orders_count,
+                            'total_price' => $report->total_price,
+                            'total_commission' => $report->total_commission ?? 0,
+                            'total_discounts' => $report->total_discounts ?? 0,
+                        ],
+                        'record_id' => $report->id,
+                        'status' => $report->status,
+                    ];
+                })->values(),
+            ];
+        });
 
 
         return $this->successResponse(
@@ -790,74 +957,266 @@ $orders = $shop->orders->whereIn('id', $orderIds)->values(); // Add values() to 
         );
     }
 
-    //getDeliveryManDetail
-    public function getDeliveryManDetail($id)
+
+    public function getDeliveryManDetail(Request $request, $id): JsonResponse
     {
-        //get delivery man details with orders
-        $deliveryMan = $this->userRepository->deliveryManDetails($id);
-
-
+        Log::info('getDeliveryManDetail ', [
+            'deliveryman_id' => $id,
+            'timestamp' => now()->toDateTimeString(),
+            'week_range' => $request->query('week_range'),
+            'query_data' => $request->query(), // this will show all query params
+        ]);
+        // Cache-based authorization check
         if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
-            abort(403);
-        }
-        if (!$deliveryMan) {
             return $this->errorResponse(
-                __('errors.' . ResponseError::NOT_FOUND, locale: $this->language)
+                ResponseError::ERROR_403,
+                __('errors.' . ResponseError::ERROR_403, locale: $this->language),
+                403
             );
         }
 
-        // Calculate total commission
-        $totalCommission = $deliveryMan->deliveryManOrders->sum('commission_fee');
+        // Validate ID
+        $validated = Validator::make(['id' => $id], [
+            'id' => 'required|integer|exists:users,id',
+        ]);
 
-        // Get orders separately
-        $orders = $deliveryMan->deliveryManOrders;
-        unset($deliveryMan->deliveryManOrders);
+
+        if ($validated->fails()) {
+            return $this->errorResponse(
+                ResponseError::ERROR_422,
+                $validated->errors()->first(),
+                422
+            );
+        }
+
+
+        // Find the shop by UUID
+        $deliveryMan = User::where('id', $id)->first();
+        if (!$deliveryMan) {
+            return response()->json([
+                'status' => false,
+                'message' => 'DeliveryMan not found'
+            ], 404);
+        }
+
+        $week_range = $request->query('week_range');
+
+        if (!$week_range) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Week Range not found'
+            ], 404);
+        }
+        // Find the weekly order
+        $weeklyReports = DeliveryManWeeklyReport::where('delivery_man_id', $id)
+            ->where('week_identifier', $week_range)->first();
+
+        if (!$weeklyReports) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Weekly Report not found or does not belong to this shop'
+            ], 404);
+        }
+
+        $orderIds = json_decode($weeklyReports->order_ids, true) ?: [];
+        $orders = $deliveryMan->deliveryManOrders->whereIn('id', $orderIds)->values();
+
 
         return $this->successResponse(
             __('errors.' . ResponseError::SUCCESS, locale: $this->language),
             [
                 'deliveryMan' => UserResource::make($deliveryMan),
                 'orders' => OrderResource::collection($orders),
-                'total_commission' => $totalCommission,
-                'total_discounts' => $deliveryMan->total_discounts ?? 0
+                'total_commission' => $weeklyReports->total_commission,
+                'total_discounts' => $weeklyReports->total_discounts
             ]
         );
     }
 
+    //upDateDeliveryManWeeklyRecordStatus
 
-    //downloadDeliveryManInvoice 
-
-    public function downloadDeliveryManInvoice($id)
+    public function upDateDeliveryManWeeklyRecordStatus(Request $request, $deliverymanId)
     {
-        $deliveryMan = $this->userRepository->deliveryManDetails($id);
+        Log::info('upDateDeliveryManWeeklyRecordStatus started', [
+            'deliveryman_id' => $deliverymanId,
+            'timestamp' => now()->toDateTimeString(),
+            'request_data' => $request->all()
+        ]);
+        $validated = Validator::make($request->all(), [
+            'status' => 'required|in:paid,unpaid,canceled',
+        ]);
 
-        Log::info('Starting invoice download process for DeliveryMan ID: ' . $deliveryMan);
 
-        if (!$deliveryMan) {
+
+
+        if ($validated->fails()) {
             return $this->errorResponse(
-                __('errors.' . ResponseError::NOT_FOUND, locale: $this->language)
+                ResponseError::ERROR_422,
+                $validated->errors()->first(),
+                422
             );
         }
 
-        $totalCommission = $deliveryMan->orders->sum('commission_fee');
-        $orders = $deliveryMan->delivery_man_orders;
-        unset($deliveryMan->orders);
+        $deliveryMan = User::where('id', $deliverymanId)->first();
+        if (!$deliveryMan) {
+            return response()->json([
+                'status' => false,
+                'message' => 'DeliveryMan not found'
+            ], 404);
+        }
 
-        Log::info('orders count: ' . $orders);
+        $week_range = $request->input('week_range');
+        if (!$week_range) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Weak Range not found'
+            ], 404);
+        }
 
-        $logo = Settings::where('key', 'logo')->first()?->value;
-        $lang = $this->language;
+        $weeklyReport = DeliveryManWeeklyReport::where('delivery_man_id', $deliverymanId)->where('week_identifier', $week_range)->first();
 
-        Log::info('Data prepared. Logo path: ' . ($logo ?? 'NULL'));
+        if (!$weeklyReport) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Weekly Report not found'
+            ], 404);
+        }
 
-        // Generate PDF
-        Log::info('Setting PDF options and loading view: shop-invoice');
-        PDF::setOption(['dpi' => 150, 'defaultFont' => 'sans-serif', 'isHtml5ParserEnabled' => true, 'isRemoteEnabled' => true]);
+        $weeklyReport->status = $request->input('status');
+        $weeklyReport->save();
 
-        $pdf = PDF::loadView('deliveryman-invoice', compact('deliveryMan', 'orders', 'totalCommission', 'logo', 'lang'));
-
-
-
-        return $pdf->download('invoice.pdf');
+        return $this->successResponse(
+            __('errors.' . ResponseError::SUCCESS, locale: $this->language),
+            [
+                'deliveryMan' => UserResource::make($deliveryMan),
+            ]
+        );
     }
+
+    //downloadDeliveryManInvoice
+    public function downloadDeliveryManInvoice($id)
+    {
+        Log::info('Starting invoice download process for DeliveryMan ID: ' . $id, ['request_data' => request()->all()]);
+
+        if (app()->bound('debugbar')) {
+            try {
+                app('debugbar')->disable();
+            } catch (\Throwable $e) {
+                // Debugbar not installed or not available, ignore
+            }
+        }
+
+        try {
+            $deliveryMan = User::with('deliveryManOrders')->find($id);
+            if (!$deliveryMan) {
+                Log::warning('DeliveryMan not found for ID: ' . $id);
+                return response()->json(['message' => 'DeliveryMan not found'], 404);
+            }
+
+            $weekRange = request()->query('week_range');
+            $weeklyReport = DeliveryManWeeklyReport::where('delivery_man_id', $id)
+                ->when($weekRange, fn($q) => $q->where('week_identifier', $weekRange))
+                ->orderByDesc('id')
+                ->first();
+
+            if (!$weeklyReport) {
+                Log::warning('Weekly report not found for DeliveryMan ID: ' . $id . ', week_range: ' . $weekRange);
+                return response()->json(['message' => 'Weekly report not found'], 404);
+            }
+
+            $orderIds = json_decode($weeklyReport->order_ids, true) ?? [];
+            $orders = $deliveryMan->deliveryManOrders()
+                ->whereIn('id', $orderIds)
+                ->get();
+
+            if ($orders->isEmpty()) {
+                Log::warning('No orders found for DeliveryMan ID: ' . $id . ', week_range: ' . $weekRange);
+                return response()->json(['message' => 'No orders found'], 404);
+            }
+
+            // Static Company Details
+            $companyDetails = [
+                'name' => 'D2Home',
+                'addressLine1' => '10/12 Clarke St, Crows Nest NSW 2065, Australia',
+                'addressLine2' => 'South Australia, 5047',
+                'email' => 'info@d2home.com',
+                'phone' => '+61 2 8103 1116',
+                'abn' => '',
+            ];
+
+            // Dynamic Invoice Meta
+            $invoiceMeta = [
+                'invoiceNumber' => '01',
+                'dateOfInvoice' => Carbon::now()->translatedFormat('d F Y'),
+                'billingPeriodStart' => 'N/A',
+                'billingPeriodEnd' => 'N/A',
+            ];
+
+            // Financial Calculations
+            $totalSales = $weeklyReport->total_price ?? 0;
+            $totalCommission = $weeklyReport->total_commission ?? 0;
+            $grossPlatformCommission = (float) $totalCommission;
+            $sumOfOrderDiscounts = $weeklyReport->total_discounts ?? 0;
+            $totalChargesAndDiscountsByPlatform = $grossPlatformCommission + $sumOfOrderDiscounts;
+            $netAmountPayableToDeliveryMan = $totalSales - $totalChargesAndDiscountsByPlatform;
+
+            $financialSummary = [
+                'totalSales' => $totalSales,
+                'grossPlatformCommission' => $grossPlatformCommission,
+                'sumOfOrderDiscounts' => $sumOfOrderDiscounts,
+                'totalSales' => $totalSales,
+                'grossPlatformCommission' => $grossPlatformCommission,
+                'sumOfOrderDiscounts' => $sumOfOrderDiscounts,
+                'totalChargesAndDiscountsByPlatform' => $totalChargesAndDiscountsByPlatform,
+                'netAmountPayableToDeliveryMan' => $netAmountPayableToDeliveryMan,
+            ];
+
+            $financialTableRows = [
+                ['desc' => 'Total Delivery Amount', 'sub' => null, 'total' => $financialSummary['totalSales'], 'isBold' => false],
+                ['desc' => 'D2Home Commission:', 'sub' => $financialSummary['grossPlatformCommission'], 'total' => null, 'isBold' => false],
+                ['desc' => 'D2Home Discounts (platform promotions):', 'sub' => $financialSummary['sumOfOrderDiscounts'], 'total' => null, 'isBold' => false],
+                ['desc' => 'Total D2Home Commission:', 'sub' => null, 'total' => $financialSummary['totalChargesAndDiscountsByPlatform'], 'isBold' => true],
+                ['desc' => 'Sub Total:', 'sub' => null, 'total' => $financialSummary['netAmountPayableToDeliveryMan'], 'isBold' => true],
+                ['desc' => 'The amount to be transferred:', 'sub' => null, 'total' => $financialSummary['netAmountPayableToDeliveryMan'], 'isBold' => true, 'isFinal' => true],
+            ];
+
+           $logo = Settings::where('key', 'logo')->first()?->value;
+            $lang = $this->language;
+
+            PDF::setOption([
+                'dpi' => 150,
+                'defaultFont' => 'sans-serif',
+                'isHtml5ParserEnabled' => true,
+                'isRemoteEnabled' => true
+            ]);
+
+            Log::info('Generating PDF for deliveryman invoice data.', [
+                'deliveryman_id' => $deliveryMan->id,
+                'order_count' => $orders->count(),
+                'total_commission' => $totalCommission
+            ]);
+
+            $pdf = PDF::loadView('deliveryman-invoice', compact(
+                'deliveryMan',
+                'orders',
+                'totalCommission',
+                'logo',
+                'lang',
+                'companyDetails',
+                'invoiceMeta',
+                'financialSummary',
+                'financialTableRows'
+            ));
+
+
+
+            return $pdf->download('invoice.pdf');
+        } catch (\Exception $e) {
+            Log::error('Invoice generation failed: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+            return response()->json(['message' => 'Failed to generate invoice'], 500);
+        }
+    }
+
+
+    
 }

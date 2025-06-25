@@ -26,7 +26,17 @@ class ShopWeeklyReport extends Model
         return $this->belongsTo(Shop::class);
     }
 
+//orders
+    public function orders()
+    {
+        return $this->hasMany(Order::class, 'id', 'order_ids');
+    }
 
-
+    //scope to get weekly report by shop id and week identifier
+    public function scopeByShopAndWeek($query, $shopId, $weekIdentifier)
+    {
+        return $query->where('shop_id', $shopId)
+                     ->where('week_identifier', $weekIdentifier);
+    }
 
 }

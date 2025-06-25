@@ -47,6 +47,7 @@ class AdminShopRepository extends CoreRepository
                 'tax',
                 'status',
                 'deleted_at',
+                'pos_access',
             ])
             ->paginate(data_get($filter, 'perPage', 10));
     }
@@ -87,6 +88,7 @@ class AdminShopRepository extends CoreRepository
                 'status',
                 'user_id',
                 'deleted_at',
+                'pos_access',
             ])
             ->orderBy(data_get($filter, 'column', 'id'), data_get($filter, 'sort', 'desc'))
             ->paginate(data_get($filter, 'perPage', 10));
