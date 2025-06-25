@@ -40,6 +40,7 @@ use App\Models\Order;
 use App\Repositories\UserRepository\UserRepository;
 use App\Repositories\ShopRepository\AdminShopRepository;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use App\Exports\ShopInvoiceExport;
 
 class ShopController extends AdminBaseController
 {
@@ -432,6 +433,16 @@ class ShopController extends AdminBaseController
                     $totalCommission = $weekOrders->sum('commission_fee') ?? 0; // Use commission_fee
                     $totalDiscounts = $weekOrders->sum('total_discount') ?? 0; // Use total_discount
 
+                    // Log all calculated values for debugging
+                    Log::info('Weekly order stats calculated', [
+                        'shop_id' => $shop->id,
+                        'week_range' => $weekRange,
+                        'order_ids' => $orderIds,
+                        'total_price' => $totalPrice,
+                        'orders_count' => $ordersCount,
+                        'total_commission' => $totalCommission,
+                        'total_discounts' => $totalDiscounts,
+                    ]);
 
 
                     // Save to weekly_orders
@@ -472,15 +483,20 @@ class ShopController extends AdminBaseController
                 Cache::forever('weekly_orders_initialized', true);
             } else {
                 // Subsequent runs: Process only current week's orders
-
+                Log::info('shop_orders', $shop->orders->toArray());
+                Log::info('currentWeekStart', ['currentWeekStart' => $currentWeekStart]);
+                Log::info('currentWeekEnd', ['currentWeekEnd' => $currentWeekEnd]);
                 $currentWeekOrders = $shop->orders->filter(function ($order) use ($currentWeekStart, $currentWeekEnd) {
-                    $isInWeek = Carbon::parse($order->created_at)->between($currentWeekStart, $currentWeekEnd);
-
-                    return $isInWeek;
+                    $createdAt = Carbon::parse($order->created_at);
+                    // Use inclusive boundaries for the week
+                    return $createdAt->greaterThanOrEqualTo($currentWeekStart) && $createdAt->lessThanOrEqualTo($currentWeekEnd);
                 });
+
+                Log::info('Current week orders', $currentWeekOrders->toArray());
 
                 // Save or update current week's orders
                 if ($currentWeekOrders->isNotEmpty()) {
+                    Log::info('here....');
                     $orderIds = $currentWeekOrders->pluck('id')->toArray();
                     $totalPrice = $currentWeekOrders->sum('total_price') ?? 0;
                     $ordersCount = $currentWeekOrders->count();
@@ -699,7 +715,7 @@ class ShopController extends AdminBaseController
         }
 
         $shop->setRelation('orders', $orders);
-        $sellerName = $shop->seller->firstname. ' '. $shop->seller->lastname ?? 'Unknown Seller';
+        $sellerName = $shop->seller->firstname . ' ' . $shop->seller->lastname ?? 'Unknown Seller';
 
         Log::info('Shop detail with orders fetched', [
             'shop' => $shop,
@@ -826,7 +842,7 @@ class ShopController extends AdminBaseController
                 'order_count' => $orders->count(),
                 'total_commission' => $totalCommission
             ]);
-        $sellerName = $shop->seller->firstname. ' '. $shop->seller->lastname ?? 'Unknown Seller';
+            $sellerName = $shop->seller->firstname . ' ' . $shop->seller->lastname ?? 'Unknown Seller';
 
             $pdf = PDF::loadView('shop-invoice', compact(
                 'shop',
@@ -851,6 +867,57 @@ class ShopController extends AdminBaseController
         }
     }
 
+    public function downloadShopInvoiceExcel(Request $request)
+    {
+        Log::info('downloadShopInvoiceExcel Runs', [
+            'query_data' => $request->all(),
+        ]);
+
+        $shop_weekly_record = ShopWeeklyReport::where('id', $request->record_id)->first();
+        if (!$shop_weekly_record) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Shop weekly record not found'
+            ], 404);
+        }
+
+        $shop = Shop::find($shop_weekly_record->shop_id);
+        if (!$shop) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Shop not found'
+            ], 404);
+        }
+
+        $orderIds = json_decode($shop_weekly_record->order_ids, true);
+        $orders = [];
+
+        if (is_array($orderIds) && !empty($orderIds)) {
+            $orders = Order::whereIn('id', $orderIds)->get();
+        }
+
+        if ($orders->isEmpty()) {
+            return response()->json([
+                'status' => false,
+                'message' => 'No orders found for the given order IDs'
+            ], 404);
+        }
+
+        // Generate filename
+        $filename = "{$shop->name}_invoice_{$shop_weekly_record->week_identifier}.xlsx";
+        $filename = preg_replace('/[^a-zA-Z0-9-_\.]/', '_', $filename);
+
+        // Return Excel download
+        return Excel::download(
+            new ShopInvoiceExport($shop, $shop_weekly_record, $orders),
+            $filename,
+            \Maatwebsite\Excel\Excel::XLSX,
+            [
+                'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'Content-Disposition' => 'attachment; filename="' . $filename . '"'
+            ]
+        );
+    }
 
 
     public function getAllActiveDeliverymanWithOrders()
@@ -1180,7 +1247,7 @@ class ShopController extends AdminBaseController
                 ['desc' => 'The amount to be transferred:', 'sub' => null, 'total' => $financialSummary['netAmountPayableToDeliveryMan'], 'isBold' => true, 'isFinal' => true],
             ];
 
-           $logo = Settings::where('key', 'logo')->first()?->value;
+            $logo = Settings::where('key', 'logo')->first()?->value;
             $lang = $this->language;
 
             PDF::setOption([
@@ -1217,6 +1284,10 @@ class ShopController extends AdminBaseController
         }
     }
 
-
-    
+    public function downloadDeliveryManInvoiceExcel(Request $request)
+    {
+        Log::info('downloadDeliveryManInvoiceExcel Runs', [
+            'query_data' => $request->all(),
+        ]);
+    }
 }
