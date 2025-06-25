@@ -699,6 +699,7 @@ class ShopController extends AdminBaseController
         }
 
         $shop->setRelation('orders', $orders);
+        $sellerName = $shop->seller->firstname. ' '. $shop->seller->lastname ?? 'Unknown Seller';
 
         Log::info('Shop detail with orders fetched', [
             'shop' => $shop,
@@ -710,8 +711,11 @@ class ShopController extends AdminBaseController
             'total_charges_and_discounts' => $totalChargesAndDiscounts,
             'net_amount_payable' => $netAmountPayable,
             'record_id' => $recordId,
-            'orders' => $orders->toArray()
+            'orders' => $orders->toArray(),
+            'sellerName' => $sellerName
         ]);
+
+        //get seller name
 
         return $this->successResponse(
             __('errors.' . ResponseError::SUCCESS, locale: $this->language),
@@ -822,6 +826,7 @@ class ShopController extends AdminBaseController
                 'order_count' => $orders->count(),
                 'total_commission' => $totalCommission
             ]);
+        $sellerName = $shop->seller->firstname. ' '. $shop->seller->lastname ?? 'Unknown Seller';
 
             $pdf = PDF::loadView('shop-invoice', compact(
                 'shop',
@@ -833,7 +838,8 @@ class ShopController extends AdminBaseController
                 'invoiceMeta',
                 'financialSummary',
                 'financialTableRows',
-                'record_id'
+                'record_id',
+                'sellerName'
             ));
 
             return $pdf->download('invoice.pdf');
@@ -1101,126 +1107,8 @@ class ShopController extends AdminBaseController
         }
 
         try {
-                Log::warning('DeliveryMan not found for ID: ' . $id);
-                return response()->json(['message' => 'DeliveryMan not found'], 404);
-            }
-
-            $weekRange = request()->query('week_range');
-            $weeklyReport = DeliveryManWeeklyReport::where('delivery_man_id', $id)
-                ->when($weekRange, fn($q) => $q->where('week_identifier', $weekRange))
-                ->orderByDesc('id')
-                ->first();
-
-            if (!$weeklyReport) {
-                Log::warning('Weekly report not found for DeliveryMan ID: ' . $id . ', week_range: ' . $weekRange);
-                return response()->json(['message' => 'Weekly report not found'], 404);
-            }
-
-            $orderIds = json_decode($weeklyReport->order_ids, true) ?? [];
-            $orders = $deliveryMan->deliveryManOrders()
-                ->whereIn('id', $orderIds)
-                ->get();
-
-            if ($orders->isEmpty()) {
-                Log::warning('No orders found for DeliveryMan ID: ' . $id . ', week_range: ' . $weekRange);
-                return response()->json(['message' => 'No orders found'], 404);
-            }
-
-            // Static Company Details
-            $companyDetails = [
-                'name' => 'D2Home',
-                'addressLine1' => '10/12 Clarke St, Crows Nest NSW 2065, Australia',
-                'addressLine2' => 'South Australia, 5047',
-                'email' => 'info@d2home.com',
-                'phone' => '+61 2 8103 1116',
-                'abn' => '',
-            ];
-
-            // Dynamic Invoice Meta
-            $invoiceMeta = [
-                'invoiceNumber' => '01',
-                'dateOfInvoice' => Carbon::now()->translatedFormat('d F Y'),
-                'billingPeriodStart' => 'N/A',
-                'billingPeriodEnd' => 'N/A',
-            ];
-
-            // Financial Calculations
-            $totalSales = $weeklyReport->total_price ?? 0;
-            $totalCommission = $weeklyReport->total_commission ?? 0;
-            $grossPlatformCommission = (float) $totalCommission;
-            $sumOfOrderDiscounts = $weeklyReport->total_discounts ?? 0;
-            $totalChargesAndDiscountsByPlatform = $grossPlatformCommission + $sumOfOrderDiscounts;
-            $netAmountPayableToDeliveryMan = $totalSales - $totalChargesAndDiscountsByPlatform;
-
-            $financialSummary = [
-                'totalSales' => $totalSales,
-                'grossPlatformCommission' => $grossPlatformCommission,
-                'sumOfOrderDiscounts' => $sumOfOrderDiscounts,
-                'totalChargesAndDiscountsByPlatform' => $totalChargesAndDiscountsByPlatform,
-                'netAmountPayableToDeliveryMan' => $netAmountPayableToDeliveryMan,
-            ];
-
-            $financialTableRows = [
-                ['desc' => 'Total Delivery Amount', 'sub' => null, 'total' => $financialSummary['totalSales'], 'isBold' => false],
-                ['desc' => 'D2Home Commission:', 'sub' => $financialSummary['grossPlatformCommission'], 'total' => null, 'isBold' => false],
-                ['desc' => 'D2Home Discounts (platform promotions):', 'sub' => $financialSummary['sumOfOrderDiscounts'], 'total' => null, 'isBold' => false],
-                ['desc' => 'Total D2Home Commission:', 'sub' => null, 'total' => $financialSummary['totalChargesAndDiscountsByPlatform'], 'isBold' => true],
-                ['desc' => 'Sub Total:', 'sub' => null, 'total' => $financialSummary['netAmountPayableToDeliveryMan'], 'isBold' => true],
-                ['desc' => 'The amount to be transferred:', 'sub' => null, 'total' => $financialSummary['netAmountPayableToDeliveryMan'], 'isBold' => true, 'isFinal' => true],
-            ];
-
-           $logo = Settings::where('key', 'logo')->first()?->value;
-            $lang = $this->language;
-
-            PDF::setOption([
-                'dpi' => 150,
-                'defaultFont' => 'sans-serif',
-                'isHtml5ParserEnabled' => true,
-                'isRemoteEnabled' => true
-            ]);
-
-            Log::info('Generating PDF for deliveryman invoice data.', [
-                'deliveryman_id' => $deliveryMan->id,
-                'order_count' => $orders->count(),
-                'total_commission' => $totalCommission
-            ]);
-
-            $pdf = PDF::loadView('deliveryman-invoice', compact(
-                'deliveryMan',
-                'orders',
-                'totalCommission',
-                'logo',
-                'lang',
-                'companyDetails',
-                'invoiceMeta',
-                'financialSummary',
-                'financialTableRows'
-            ));
-
-
-
-            return $pdf->download('invoice.pdf');
-        } catch (\Exception $e) {
-            Log::error('Invoice generation failed: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
-            return response()->json(['message' => 'Failed to generate invoice'], 500);
-        }
-    }
-
-    //downloadDeliveryManInvoice
-    public function downloadDeliveryManInvoice($id)
-    {
-        Log::info('Starting invoice download process for DeliveryMan ID: ' . $id, ['request_data' => request()->all()]);
-
-        if (app()->bound('debugbar')) {
-            try {
-                app('debugbar')->disable();
-            } catch (\Throwable $e) {
-                // Debugbar not installed or not available, ignore
-            }
-        }
-
-        try {
             $deliveryMan = User::with('deliveryManOrders')->find($id);
+            if (!$deliveryMan) {
                 Log::warning('DeliveryMan not found for ID: ' . $id);
                 return response()->json(['message' => 'DeliveryMan not found'], 404);
             }
