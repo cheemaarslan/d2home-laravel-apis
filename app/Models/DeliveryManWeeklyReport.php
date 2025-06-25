@@ -16,7 +16,7 @@ class DeliveryManWeeklyReport extends Model
         'orders_count',
         'total_commission',
         'total_discounts',
-        'status', // Optional: status of the report
+        'status'
     ];
 
     protected $casts = [

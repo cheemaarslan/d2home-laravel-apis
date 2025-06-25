@@ -168,7 +168,7 @@
 
                 <div style="float: right;">
                     <img src="{{ public_path('images/image.png') }}" alt="D2Home Logo"
-                        style="height: 100px; width: 100px; object-fit: cover; border-radius: 50%; border: 2px solid white;">
+                        style="height: 100px; width: 100px; object-fit: cover; border-radius: 50%;">
                 </div>
                 <div style="clear: both;"></div>
             </div>
