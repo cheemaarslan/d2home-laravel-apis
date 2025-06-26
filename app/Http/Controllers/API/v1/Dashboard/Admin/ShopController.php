@@ -873,50 +873,6 @@ class ShopController extends AdminBaseController
             'query_data' => $request->all(),
         ]);
 
-        $shop_weekly_record = ShopWeeklyReport::where('id', $request->record_id)->first();
-        if (!$shop_weekly_record) {
-            return response()->json([
-                'status' => false,
-                'message' => 'Shop weekly record not found'
-            ], 404);
-        }
-
-        $shop = Shop::find($shop_weekly_record->shop_id);
-        if (!$shop) {
-            return response()->json([
-                'status' => false,
-                'message' => 'Shop not found'
-            ], 404);
-        }
-
-        $orderIds = json_decode($shop_weekly_record->order_ids, true);
-        $orders = [];
-
-        if (is_array($orderIds) && !empty($orderIds)) {
-            $orders = Order::whereIn('id', $orderIds)->get();
-        }
-
-        if ($orders->isEmpty()) {
-            return response()->json([
-                'status' => false,
-                'message' => 'No orders found for the given order IDs'
-            ], 404);
-        }
-
-        // Generate filename
-        $filename = "{$shop->name}_invoice_{$shop_weekly_record->week_identifier}.xlsx";
-        $filename = preg_replace('/[^a-zA-Z0-9-_\.]/', '_', $filename);
-
-        // Return Excel download
-        return Excel::download(
-            new ShopInvoiceExport($shop, $shop_weekly_record, $orders),
-            $filename,
-            \Maatwebsite\Excel\Excel::XLSX,
-            [
-                'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                'Content-Disposition' => 'attachment; filename="' . $filename . '"'
-            ]
-        );
     }
 
 
