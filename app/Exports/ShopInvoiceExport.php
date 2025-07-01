@@ -2,98 +2,76 @@
 
 namespace App\Exports;
 
+use Illuminate\Support\Collection;
 use Maatwebsite\Excel\Concerns\FromCollection;
 use Maatwebsite\Excel\Concerns\WithHeadings;
-use Maatwebsite\Excel\Concerns\WithStyles;
-use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
+use App\Models\Shop;
 
-class ShopInvoiceExport implements FromCollection, WithHeadings, WithStyles
+class ShopInvoiceExport implements FromCollection, WithHeadings
 {
-    protected $shop;
-    protected $weeklyRecord;
-    protected $orders;
+    protected $filterData;
 
-    public function __construct($shop, $weeklyRecord, $orders)
+    public function __construct(array $filterData)
     {
-        $this->shop = $shop;
-        $this->weeklyRecord = $weeklyRecord;
-        $this->orders = $orders;
+        $this->filterData = $filterData;
     }
 
     public function collection()
     {
-        $data = [];
-        
-        // Add shop and weekly record info
-        $data[] = ['Shop Name', $this->shop->name];
-        $data[] = ['Week Range', $this->weeklyRecord->week_identifier];
-        $data[] = ['Total Price', $this->weeklyRecord->total_price];
-        $data[] = ['Total Commission', $this->weeklyRecord->total_commission];
-        $data[] = ['Total Discounts', $this->weeklyRecord->total_discounts];
-        $data[] = ['Status', ucfirst($this->weeklyRecord->status)];
-        $data[] = []; // Empty row
-        
-        // Add orders header
-        $data[] = ['Order Details'];
-        $data[] = [
-            'Order ID',
-            'Date',
-            'Status',
-            'Total Price',
-            'Commission Fee',
-            'Delivery Fee',
-            'Service Fee',
-            'Customer Phone',
-            'Delivery Address'
-        ];
-        
-        // Add order data
-        foreach ($this->orders as $order) {
-            $data[] = [
-                $order->id,
-                $order->delivery_date . ' ' . $order->delivery_time,
-                ucfirst($order->status),
-                $order->total_price,
-                $order->commission_fee,
-                $order->delivery_fee,
-                $order->service_fee,
-                $order->phone,
-                $order->address['address'] ?? 'N/A'
+        $groupedData = $this->filterAndSummarizeByShopName($this->filterData);
+
+        return collect($groupedData)->map(function ($item) {
+            return [
+                'Seller Name'   => $item['seller_name'],
+                'Orders Count'  => $item['orders_count'],
+                'Total Price'   => $item['total_price'],
+                'Commission'    => $item['total_commission'],
+                'Discounts'     => $item['total_discounts'],
+                'Status'        => $item['status'],
             ];
+        });
+    }
+
+    protected function filterAndSummarizeByShopName(array $data)
+    {
+        $shopIds = collect($data)->pluck('shop_id')->unique();
+        $shops = Shop::with('seller')->whereIn('id', $shopIds)->get()->keyBy('id');
+
+        $grouped = [];
+        foreach ($data as $item) {
+            $shop = $shops->get($item['shop_id']);
+            $sellerName = $shop && $shop->seller ? trim($shop->seller->firstname . ' ' . $shop->seller->lastname) : '';
+            $key = $sellerName; // group by seller name now (or you can use any unique key)
+
+            if (!isset($grouped[$key])) {
+                $grouped[$key] = [
+                    'seller_name'      => $sellerName,
+                    'orders_count'     => 0,
+                    'total_price'      => 0,
+                    'total_commission' => 0,
+                    'total_discounts'  => 0,
+                    'status'           => $item['status'],
+                ];
+            }
+
+            $grouped[$key]['orders_count']     += $item['orders_count'];
+            $grouped[$key]['total_price']      += $item['total_price'];
+            $grouped[$key]['total_commission'] += $item['total_commission'];
+            $grouped[$key]['total_discounts']  += $item['total_discounts'];
         }
-        
-        return collect($data);
+
+        return array_values($grouped);
     }
 
     public function headings(): array
     {
-        return [];
-    }
-
-    public function styles(Worksheet $sheet)
-    {
         return [
-            // Style the first row (shop info) as bold
-            1 => ['font' => ['bold' => true]],
-            2 => ['font' => ['bold' => true]],
-            3 => ['font' => ['bold' => true]],
-            4 => ['font' => ['bold' => true]],
-            5 => ['font' => ['bold' => true]],
-            6 => ['font' => ['bold' => true]],
-            
-            // Style the orders header row
-            8 => ['font' => ['bold' => true]],
-            
-            // Set column widths
-            'A' => ['width' => 15],
-            'B' => ['width' => 20],
-            'C' => ['width' => 15],
-            'D' => ['width' => 15],
-            'E' => ['width' => 15],
-            'F' => ['width' => 15],
-            'G' => ['width' => 15],
-            'H' => ['width' => 20],
-            'I' => ['width' => 40],
+            'Seller Name',
+            'Orders Count',
+            'Total Price',
+            'Commission',
+            'Discounts',
+            'Status',
         ];
     }
 }

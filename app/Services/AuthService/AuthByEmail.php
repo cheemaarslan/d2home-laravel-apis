@@ -21,6 +21,7 @@ class AuthByEmail extends CoreService
 
     public function authentication(array $array): JsonResponse
     {
+       
         /** @var User $user */
 
         $user = $this->model()

@@ -48,6 +48,7 @@ class ProfileController extends UserBaseController
      */
     public function store(UserCreateRequest $request): JsonResponse
     {
+        dd('user profile controller',$request->all());
         $result = $this->userService->create($request->validated());
 
         if (!data_get($result, 'status')) {

@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers\API\v1\Dashboard\Admin;
 
+use App\Http\Requests\ShopInvoiceExcelRequest;
 use Throwable;
 use Carbon\Carbon;
 use App\Models\Shop;
 use App\Models\User;
 use App\Models\Settings;
 use App\Exports\ShopExport;
+use App\Exports\ShopInvoiceExport;
 use App\Imports\ShopImport;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -40,7 +42,10 @@ use App\Models\Order;
 use App\Repositories\UserRepository\UserRepository;
 use App\Repositories\ShopRepository\AdminShopRepository;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
-use App\Exports\ShopInvoiceExport;
+use App\Http\Requests\DeliveryManInvoiceExcelRequest;
+use App\Exports\DeliveryManInvoiceExport;
+use App\Http\Requests\DeliveryManSetting\DeliveryManRequest;
+use Illuminate\Support\Collection;
 
 class ShopController extends AdminBaseController
 {
@@ -391,178 +396,116 @@ class ShopController extends AdminBaseController
 
     public function getAllActiveShopsWithOrders(): JsonResponse
     {
-
         Log::info('getAllActiveShopsWithOrders started', [
             'timestamp' => now()->toDateTimeString()
         ]);
-        // Cache-based authorization check
-
 
         // Determine current week range (Monday to Sunday)
         $currentWeekStart = Carbon::now()->startOfWeek(Carbon::MONDAY);
         $currentWeekEnd = $currentWeekStart->copy()->endOfWeek(Carbon::SUNDAY);
         $currentWeekRange = $currentWeekStart->format('Y-m-d') . ' to ' . $currentWeekEnd->format('Y-m-d');
 
-        // Check if weekly_orders has been initialized
-        $isInitialized = Cache::get('weekly_orders_initialized', false);
-
-        // Fetch active shops
+        // Fetch active shops with their orders
         $shops = $this->repository->getAllActiveShopsWithOrders();
 
-
         // Process shops
-        $responseData = $shops->map(function ($shop) use ($isInitialized, $currentWeekStart, $currentWeekEnd, $currentWeekRange) {
+        $responseData = $shops->map(function ($shop) use ($currentWeekStart, $currentWeekEnd, $currentWeekRange) {
+            // Get all orders for this shop
+            $allOrders = $shop->orders;
+            Log::info('Processing all orders for shop', ['shop_id' => $shop->id, 'order_count' => $allOrders->count()]);
 
-            if (!$isInitialized) {
-                // First run: Process all orders
-                $orders = $shop->orders;
-                Log::info('Processing all orders for shop', ['shop_id' => $shop->id, 'order_count' => $orders]);
+            // Process current week orders first
+            $currentWeekOrders = $allOrders->filter(function ($order) use ($currentWeekStart, $currentWeekEnd) {
+                $createdAt = Carbon::parse($order->created_at);
+                return $createdAt->between($currentWeekStart, $currentWeekEnd);
+            });
 
-                $weeklyOrders = $orders->groupBy(function ($order) {
-                    $date = Carbon::parse($order->created_at);
-                    $startOfWeek = $date->startOfWeek(Carbon::MONDAY);
-                    $endOfWeek = $startOfWeek->copy()->endOfWeek(Carbon::SUNDAY);
-                    $weekRange = $startOfWeek->format('Y-m-d') . ' to ' . $endOfWeek->format('Y-m-d');
+            // Save or update current week's orders
+            if ($currentWeekOrders->isNotEmpty()) {
+                $this->updateWeeklyReport(
+                    $shop->id,
+                    $currentWeekRange,
+                    $currentWeekOrders
+                );
+            }
 
-                    return $weekRange;
-                })->map(function ($weekOrders, $weekRange) use ($shop) {
+            // Group all orders by week (including previous weeks)
+            $weeklyOrders = $allOrders->groupBy(function ($order) {
+                $date = Carbon::parse($order->created_at);
+                $startOfWeek = $date->startOfWeek(Carbon::MONDAY);
+                $endOfWeek = $startOfWeek->copy()->endOfWeek(Carbon::SUNDAY);
+                return $startOfWeek->format('Y-m-d') . ' to ' . $endOfWeek->format('Y-m-d');
+            });
 
-                    $orderIds = $weekOrders->pluck('id')->toArray();
-                    $totalPrice = $weekOrders->sum('total_price') ?? 0;
-                    $ordersCount = $weekOrders->count();
-                    $totalCommission = $weekOrders->sum('commission_fee') ?? 0; // Use commission_fee
-                    $totalDiscounts = $weekOrders->sum('total_discount') ?? 0; // Use total_discount
+            // Process each week's data
+            $processedWeeks = $weeklyOrders->map(function ($weekOrders, $weekRange) use ($shop, $currentWeekRange) {
+                // Update weekly report for this week
+                $this->updateWeeklyReport(
+                    $shop->id,
+                    $weekRange,
+                    $weekOrders
+                );
 
-                    // Log all calculated values for debugging
-                    Log::info('Weekly order stats calculated', [
-                        'shop_id' => $shop->id,
-                        'week_range' => $weekRange,
-                        'order_ids' => $orderIds,
-                        'total_price' => $totalPrice,
-                        'orders_count' => $ordersCount,
-                        'total_commission' => $totalCommission,
-                        'total_discounts' => $totalDiscounts,
-                    ]);
+                return [
+                    'week_range' => $weekRange,
+                    'orders' => $weekRange === $currentWeekRange
+                        ? OrderResource::collection($weekOrders)
+                        : OrderResource::collection(collect([])),
+                    'statistics' => [
+                        'orders_count' => $weekOrders->count(),
+                        'total_price' => $weekOrders->sum('total_price') ?? 0,
+                        'total_commission' => $weekOrders->sum('commission_fee') ?? 0,
+                        'total_discounts' => $weekOrders->sum('total_discount') ?? 0,
+                    ],
+                ];
+            })->values();
 
+            // Get all weekly reports from database (including status filtering)
+            $weeklyReports = ShopWeeklyReport::where('shop_id', $shop->id)
+                ->when(request('status'), function ($query, $status) {
+                    return $query->where('status', $status);
+                })
+                ->orderBy('week_identifier', 'desc')
+                ->get();
 
-                    // Save to weekly_orders
-                    try {
-                        DB::transaction(function () use ($shop, $weekRange, $orderIds, $totalPrice, $ordersCount, $totalCommission, $totalDiscounts) {
-                            ShopWeeklyReport::updateOrCreate(
-                                [
-                                    'shop_id' => $shop->id,
-                                    'week_identifier' => $weekRange,
-                                ],
-                                [
-                                    'order_ids' => json_encode($orderIds),
-                                    'total_price' => $totalPrice,
-                                    'orders_count' => $ordersCount,
-                                    'total_commission' => $totalCommission,
-                                    'total_discounts' => $totalDiscounts,
-                                ]
-                            );
-                        });
-                    } catch (\Exception $e) {
+            // Merge processed weeks with database records
+            $finalWeeklyOrders = collect([]);
 
-                        throw $e;
-                    }
+            foreach ($weeklyReports as $report) {
+                $weekData = $processedWeeks->firstWhere('week_range', $report->week_identifier);
 
-                    return [
-                        'week_range' => $weekRange,
-                        'orders' => OrderResource::collection($weekOrders),
+                if (!$weekData) {
+                    $weekData = [
+                        'week_range' => $report->week_identifier,
+                        'orders' => OrderResource::collection(collect([])),
                         'statistics' => [
-                            'orders_count' => $ordersCount,
-                            'total_price' => $totalPrice,
-                            'total_commission' => $totalCommission,
-                            'total_discounts' => $totalDiscounts,
+                            'orders_count' => $report->orders_count,
+                            'total_price' => $report->total_price,
+                            'total_commission' => $report->total_commission ?? 0,
+                            'total_discounts' => $report->total_discounts ?? 0,
                         ],
                     ];
-                })->values();
-
-                // Mark as initialized (no expiration)
-                Cache::forever('weekly_orders_initialized', true);
-            } else {
-                // Subsequent runs: Process only current week's orders
-                Log::info('shop_orders', $shop->orders->toArray());
-                Log::info('currentWeekStart', ['currentWeekStart' => $currentWeekStart]);
-                Log::info('currentWeekEnd', ['currentWeekEnd' => $currentWeekEnd]);
-                $currentWeekOrders = $shop->orders->filter(function ($order) use ($currentWeekStart, $currentWeekEnd) {
-                    $createdAt = Carbon::parse($order->created_at);
-                    // Use inclusive boundaries for the week
-                    return $createdAt->greaterThanOrEqualTo($currentWeekStart) && $createdAt->lessThanOrEqualTo($currentWeekEnd);
-                });
-
-                Log::info('Current week orders', $currentWeekOrders->toArray());
-
-                // Save or update current week's orders
-                if ($currentWeekOrders->isNotEmpty()) {
-                    Log::info('here....');
-                    $orderIds = $currentWeekOrders->pluck('id')->toArray();
-                    $totalPrice = $currentWeekOrders->sum('total_price') ?? 0;
-                    $ordersCount = $currentWeekOrders->count();
-                    $totalCommission = $currentWeekOrders->sum('commission_fee') ?? 0;
-                    $totalDiscounts = $currentWeekOrders->sum('total_discount') ?? 0;
-
-
-
-                    try {
-                        DB::transaction(function () use ($shop, $currentWeekRange, $orderIds, $totalPrice, $ordersCount, $totalCommission, $totalDiscounts) {
-                            ShopWeeklyReport::updateOrCreate(
-                                [
-                                    'shop_id' => $shop->id,
-                                    'week_identifier' => $currentWeekRange,
-                                ],
-                                [
-                                    'order_ids' => json_encode($orderIds),
-                                    'total_price' => $totalPrice,
-                                    'orders_count' => $ordersCount,
-                                    'total_commission' => $totalCommission,
-                                    'total_discounts' => $totalDiscounts,
-                                ]
-                            );
-                        });
-                    } catch (\Exception $e) {
-
-                        throw $e;
-                    }
                 }
 
-                // Fetch all weekly orders from database
-                $weeklyOrders = ShopWeeklyReport::where('shop_id', $shop->id)
-                    ->when(request('status'), function ($query, $status) {
-                        return $query->where('status', $status);
-                    })
-                    ->get()
-                    ->map(function ($weeklyOrder) use ($shop, $currentWeekRange) {
+                // Add record_id and status from database
+                $weekData['record_id'] = $report->id;
+                $weekData['status'] = $report->status;
 
-                        $orders = $weeklyOrder->week_identifier === $currentWeekRange
-                            ? $shop->orders->whereIn('id', json_decode($weeklyOrder->order_ids, true) ?: [])
-                            : collect([]);
-
-                        return [
-                            'week_range' => $weeklyOrder->week_identifier,
-                            'orders' => OrderResource::collection($orders),
-                            'statistics' => [
-                                'orders_count' => $weeklyOrder->orders_count,
-                                'total_price' => $weeklyOrder->total_price,
-                                'total_commission' => $weeklyOrder->total_commission ?? 0,
-                                'total_discounts' => $weeklyOrder->total_discounts ?? 0,
-                            ],
-                            'record_id' => $weeklyOrder->id,
-                            'status' => $weeklyOrder->status,
-                        ];
-                    })->values();
-                Log::info('Weekly orders fetched from database', ['shop_id' => $shop->id, 'week_count' => $weeklyOrders->count()]);
+                $finalWeeklyOrders->push($weekData);
             }
 
             unset($shop->orders); // Remove orders to avoid redundancy
 
+            Log::info('Shop processed', [
+                'shop_id' => $shop->id,
+                'weekly_orders_count' => $finalWeeklyOrders->count()
+            ]);
+
             return [
                 'shop' => ShopResource::make($shop),
-                'weekly_orders' => $weeklyOrders,
+                'weekly_orders' => $finalWeeklyOrders,
             ];
         });
-
 
         return $this->successResponse(
             __('errors.' . ResponseError::SUCCESS, locale: $this->language),
@@ -570,15 +513,52 @@ class ShopController extends AdminBaseController
         );
     }
 
+    /**
+     * Helper method to update weekly report
+     */
+    private function updateWeeklyReport(int $shopId, string $weekRange, $orders): void
+    {
+        $orderIds = $orders->pluck('id')->toArray();
+        $totalPrice = $orders->sum('total_price') ?? 0;
+        $ordersCount = $orders->count();
+        $totalCommission = $orders->sum('commission_fee') ?? 0;
+        $totalDiscounts = $orders->sum('total_discount') ?? 0;
+
+        try {
+            DB::transaction(function () use ($shopId, $weekRange, $orderIds, $totalPrice, $ordersCount, $totalCommission, $totalDiscounts) {
+                ShopWeeklyReport::updateOrCreate(
+                    [
+                        'shop_id' => $shopId,
+                        'week_identifier' => $weekRange,
+                    ],
+                    [
+                        'order_ids' => json_encode($orderIds),
+                        'total_price' => $totalPrice,
+                        'orders_count' => $ordersCount,
+                        'total_commission' => $totalCommission,
+                        'total_discounts' => $totalDiscounts,
+                    ]
+                );
+            });
+        } catch (\Exception $e) {
+            Log::error('Failed to update weekly report', [
+                'shop_id' => $shopId,
+                'week_range' => $weekRange,
+                'error' => $e->getMessage()
+            ]);
+            throw $e;
+        }
+    }
+
 
 
     public function updateWeeklyOrderStatus(Request $request, $shopUuid)
     {
-        Log::info('updateWeeklyOrderStatus started', [
-            'shop_uuid' => $shopUuid,
-            'timestamp' => now()->toDateTimeString(),
-            'request_data' => $request->all()
-        ]);
+        // Log::info('updateWeeklyOrderStatus started', [
+        //     'shop_uuid' => $shopUuid,
+        //     'timestamp' => now()->toDateTimeString(),
+        //     'request_data' => $request->all()
+        // ]);
         try {
             // Validate request
             $validator = Validator::make($request->all(), [
@@ -619,12 +599,12 @@ class ShopController extends AdminBaseController
             $weeklyOrder->status = $request->status;
             $weeklyOrder->save();
 
-            // Log the update
-            Log::info('Weekly order status updated', [
-                'record_id' => $weeklyOrder->id,
-                'shop_id' => $shop->id,
-                'new_status' => $request->status
-            ]);
+            // // Log the update
+            // Log::info('Weekly order status updated', [
+            //     'record_id' => $weeklyOrder->id,
+            //     'shop_id' => $shop->id,
+            //     'new_status' => $request->status
+            // ]);
 
             return response()->json([
                 'status' => true,
@@ -651,10 +631,10 @@ class ShopController extends AdminBaseController
 
     public function getShopDetailWithOrders(Request $request)
     {
-        Log::info('getShopDetailWithOrders started', [
-            'request_data' => $request->all(),
-            'timestamp' => now()->toDateTimeString()
-        ]);
+        // Log::info('getShopDetailWithOrders started', [
+        //     'request_data' => $request->all(),
+        //     'timestamp' => now()->toDateTimeString()
+        // ]);
 
         $recordId = $request->input('record_id');
         if (!is_numeric($recordId) || $recordId <= 0) {
@@ -674,6 +654,8 @@ class ShopController extends AdminBaseController
             ]);
         }
 
+
+
         $orderIds = json_decode($weeklyReport->order_ids, true);
         if (json_last_error() !== JSON_ERROR_NONE) {
             Log::error('Invalid JSON in order_ids', ['record_id' => $recordId, 'error' => json_last_error_msg()]);
@@ -683,6 +665,8 @@ class ShopController extends AdminBaseController
         $shop = Shop::with(['orders' => function ($query) use ($orderIds) {
             $query->whereIn('id', $orderIds);
         }])->find($weeklyReport->shop->id);
+
+        Log::info('Shop detail fetched', ['shop_id' => $weeklyReport->shop->id, 'orders_count' => $shop->orders->count()]);
 
         if (empty($shop)) {
             Log::warning('Shop not found', ['shop_id' => $weeklyReport->shop->id]);
@@ -698,6 +682,11 @@ class ShopController extends AdminBaseController
         }
 
         $orders = $shop->orders;
+        Log::info('Orders for ShopWeeklyReport', [
+            'record_id' => $recordId,
+            'order_ids' => $orderIds,
+            'orders' => $orders->toArray(),
+        ]);
         $totalCommission = $weeklyReport->total_commission ?? 0;
         $totalDiscounts = $weeklyReport->total_discounts ?? 0;
         $totalSales = $weeklyReport->total_price ?? 0;
@@ -717,19 +706,19 @@ class ShopController extends AdminBaseController
         $shop->setRelation('orders', $orders);
         $sellerName = $shop->seller->firstname . ' ' . $shop->seller->lastname ?? 'Unknown Seller';
 
-        Log::info('Shop detail with orders fetched', [
-            'shop' => $shop,
-            'orders_count' => $orders->count(),
-            'total_sales' => $totalSales,
-            'total_commission' => $totalCommission,
-            'total_discounts' => $totalDiscounts,
-            'sum_of_order_discounts' => $sumOfOrderDiscounts,
-            'total_charges_and_discounts' => $totalChargesAndDiscounts,
-            'net_amount_payable' => $netAmountPayable,
-            'record_id' => $recordId,
-            'orders' => $orders->toArray(),
-            'sellerName' => $sellerName
-        ]);
+        // Log::info('Shop detail with orders fetched', [
+        //     'shop' => $shop,
+        //     'orders_count' => $orders->count(),
+        //     'total_sales' => $totalSales,
+        //     'total_commission' => $totalCommission,
+        //     'total_discounts' => $totalDiscounts,
+        //     'sum_of_order_discounts' => $sumOfOrderDiscounts,
+        //     'total_charges_and_discounts' => $totalChargesAndDiscounts,
+        //     'net_amount_payable' => $netAmountPayable,
+        //     'record_id' => $recordId,
+        //     'orders' => $orders->toArray(),
+        //     'sellerName' => $sellerName
+        // ]);
 
         //get seller name
 
@@ -752,7 +741,7 @@ class ShopController extends AdminBaseController
 
     public function downloadShopInvoice(string $uuid): Response|JsonResponse
     {
-        Log::info('Starting invoice download process for Shop UUID: ' . $uuid);
+        // Log::info('Starting invoice download process for Shop UUID: ' . $uuid);
 
         if (app()->bound('debugbar')) {
             try {
@@ -780,7 +769,7 @@ class ShopController extends AdminBaseController
 
             $orders = $shop->orders()->whereIn('id', $orderIds)->get();
 
-            Log::info('Order details loaded for PDF generation.');
+            // Log::info('Order details loaded for PDF generation.');
 
             // Static Company Details
             $companyDetails = [
@@ -837,11 +826,11 @@ class ShopController extends AdminBaseController
                 'isRemoteEnabled' => true
             ]);
 
-            Log::info('Generating PDF for shop invoice data.', [
-                'shop_id' => $shop->id,
-                'order_count' => $orders->count(),
-                'total_commission' => $totalCommission
-            ]);
+            // Log::info('Generating PDF for shop invoice data.', [
+            //     'shop_id' => $shop->id,
+            //     'order_count' => $orders->count(),
+            //     'total_commission' => $totalCommission
+            // ]);
             $sellerName = $shop->seller->firstname . ' ' . $shop->seller->lastname ?? 'Unknown Seller';
 
             $pdf = PDF::loadView('shop-invoice', compact(
@@ -867,85 +856,127 @@ class ShopController extends AdminBaseController
         }
     }
 
-    public function downloadShopInvoiceExcel(Request $request)
+    public function downloadShopInvoiceExcel(ShopInvoiceExcelRequest $request)
     {
-        Log::info('downloadShopInvoiceExcel Runs', [
-            'query_data' => $request->all(),
-        ]);
+        // Log::info('downloadShopInvoiceExcel Runs', [
+        //     'query_data' => $request->all(),
+        // ]);
 
+        // $filteredData = $request->input('params.filteredData', []);
+
+        // This will only get records where status is 'unpaid'
+        $filteredData = ShopWeeklyReport::where('status', 'unpaid')->get()->toArray();
+
+        // Log::debug('Filtered data passed to Excel:', $filteredData);
+
+        $fileName = 'export/shop-invoice.xlsx';
+        $shopInvoiceExport = new ShopInvoiceExport($filteredData);
+
+
+        try {
+            $stored = Excel::store($shopInvoiceExport, $fileName, 'public', \Maatwebsite\Excel\Excel::XLSX);
+
+            // Log::info('Excel store status: ' . ($stored ? 'Success' : 'Failed'));
+
+            if (!$stored || !\Storage::disk('public')->exists($fileName)) {
+                return $this->errorResponse("Excel file not found after generation", 404);
+            }
+
+            return $this->successResponse('Successfully exported', [
+                'path'      => \Storage::disk('public')->url($fileName),
+                'file_name' => $fileName
+            ]);
+        } catch (Throwable $e) {
+            report($e);
+            return $this->errorResponse('Error during export');
+        }
     }
 
 
     public function getAllActiveDeliverymanWithOrders()
     {
-        $deliveryMans = $this->userRepository->deliveryMans($filter = [
-            'role' => 'deliveryman',
-        ]);
         if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
             abort(403);
         }
 
-        Log::info('DeliveryMans fetched', [
-            'deliveryMans' => $deliveryMans->toArray(),
-            'count' => $deliveryMans->count(),
-            'timestamp' => now()->toDateTimeString()
-        ]);
+        // Get all deliverymen who have ever handled orders
+        $deliveryMans = User::whereIn('id', function ($query) {
+            $query->select('deliveryman')
+                ->from('orders')
+                ->whereNotNull('deliveryman');
+        })
+            ->get();
 
-        //weekStart from last monday
-        $weekStart = now()->startOfWeek()->subDays(7);
-        $weekEnd = now()->endOfWeek()->subDays(7);
-        //marge weekStart and weekEnd
-        $weekRange = $weekStart->format('Y-m-d') . ' to ' . $weekEnd->format('Y-m-d');
-        $responseData = $deliveryMans->map(function ($deliveryMan) use ($weekRange) {
-            $orders = $deliveryMan->deliveryManOrders;
-            unset($deliveryMan->deliveryManOrders);
-
-            return [
-                'week_range' => $weekRange,
-                'deliveryMan' => UserResource::make($deliveryMan),
-                'orders' => OrderResource::collection($orders),
-                'statistics' => [
-                    'total_commission' => $deliveryMan->total_commission,
-                    'total_discounts' => $deliveryMan->total_discounts ?? 0,
-                    'orders_count' => $orders->count(),
-                    'total' => $orders->sum('total_price') ?? 0,
-                ]
-            ];
-        });
-
-        // return UserResource::collection($deliveryMans);
-        foreach ($deliveryMans as $deliveryMan) {
-            try {
-                DB::transaction(function () use ($deliveryMan, $weekRange) {
-                    $orderIds = $deliveryMan->deliveryManOrders->pluck('id')->toArray();
-                    $totalPrice = $deliveryMan->deliveryManOrders->sum('total_price') ?? 0;
-                    $ordersCount = $deliveryMan->deliveryManOrders->count();
-                    $totalCommission = $deliveryMan->deliveryManOrders->sum('commission_fee') ?? 0;
-                    $totalDiscounts = $deliveryMan->deliveryManOrders->sum('total_discount') ?? 0;
-
-                    // Assuming you have a DeliveryManWeeklyReport model/table
-                    \App\Models\DeliveryManWeeklyReport::updateOrCreate(
-                        [
-                            'delivery_man_id' => $deliveryMan->id,
-                            'week_identifier' => $weekRange,
-                        ],
-                        [
-                            'order_ids' => json_encode($orderIds),
-                            'total_price' => $totalPrice,
-                            'orders_count' => $ordersCount,
-                            'total_commission' => $totalCommission,
-                            'total_discounts' => $totalDiscounts,
-                        ]
-                    );
-                });
-            } catch (\Exception $e) {
-                Log::error('Error saving delivery man weekly report', [
-                    'delivery_man_id' => $deliveryMan->id,
-                    'error' => $e->getMessage()
-                ]);
-            }
+        // FIRST TIME: Process all historical orders
+        if (!\App\Models\DeliveryManWeeklyReport::exists()) {
+            $this->processAllHistoricalOrders($deliveryMans);
         }
 
+        // ONGOING: Process only new orders (not yet in any weekly report)
+        $this->processNewOrders($deliveryMans);
+
+        // Return all weekly reports
+        return $this->buildResponse($deliveryMans);
+    }
+
+    protected function processAllHistoricalOrders($deliveryMans)
+    {
+        foreach ($deliveryMans as $deliveryMan) {
+            $orders = $deliveryMan->deliveryManOrders()
+                ->orderBy('created_at')
+                ->get()
+                ->groupBy(function ($order) {
+                    return $order->created_at->startOfWeek()->format('Y-m-d') . ' to ' .
+                        $order->created_at->endOfWeek()->format('Y-m-d');
+                });
+
+            foreach ($orders as $weekRange => $weekOrders) {
+                $this->createWeeklyReport($deliveryMan, $weekRange, $weekOrders);
+            }
+        }
+    }
+
+    protected function processNewOrders($deliveryMans)
+    {
+        $existingOrderIds = \App\Models\DeliveryManWeeklyReport::pluck('order_ids')
+            ->flatMap(function ($ids) {
+                return json_decode($ids, true) ?: [];
+            })
+            ->unique()
+            ->toArray();
+
+        foreach ($deliveryMans as $deliveryMan) {
+            $newOrders = $deliveryMan->deliveryManOrders()
+                ->whereNotIn('id', $existingOrderIds)
+                ->get()
+                ->groupBy(function ($order) {
+                    return $order->created_at->startOfWeek()->format('Y-m-d') . ' to ' .
+                        $order->created_at->endOfWeek()->format('Y-m-d');
+                });
+
+            foreach ($newOrders as $weekRange => $weekOrders) {
+                $this->updateWeeklyReport($deliveryMan, $weekRange, $weekOrders);
+            }
+        }
+    }
+
+    protected function createWeeklyReport($deliveryMan, $weekRange, $orders)
+    {
+        DB::transaction(function () use ($deliveryMan, $weekRange, $orders) {
+            \App\Models\DeliveryManWeeklyReport::create([
+                'delivery_man_id' => $deliveryMan->id,
+                'week_identifier' => $weekRange,
+                'order_ids' => json_encode($orders->pluck('id')->toArray()),
+                'total_price' => $orders->sum('total_price'),
+                'orders_count' => $orders->count(),
+                'total_commission' => $orders->sum('commission_fee'),
+                'total_discounts' => $orders->sum('total_discount'),
+            ]);
+        });
+    }
+
+    protected function buildResponse($deliveryMans)
+    {
         $weeklyReports = \App\Models\DeliveryManWeeklyReport::whereIn('delivery_man_id', $deliveryMans->pluck('id'))
             ->get()
             ->groupBy('delivery_man_id');
@@ -954,12 +985,9 @@ class ShopController extends AdminBaseController
             $reports = $weeklyReports->get($deliveryMan->id, collect());
             return [
                 'deliveryMan' => UserResource::make($deliveryMan),
-                'weekly_reports' => $reports->map(function ($report) use ($deliveryMan) {
-                    $orderIds = json_decode($report->order_ids, true) ?: [];
-                    $orders = $deliveryMan->deliveryManOrders->whereIn('id', $orderIds)->values();
+                'weekly_reports' => $reports->map(function ($report) {
                     return [
                         'week_range' => $report->week_identifier,
-                        'orders' => OrderResource::collection($orders),
                         'statistics' => [
                             'orders_count' => $report->orders_count,
                             'total_price' => $report->total_price,
@@ -969,10 +997,11 @@ class ShopController extends AdminBaseController
                         'record_id' => $report->id,
                         'status' => $report->status,
                     ];
-                })->values(),
+                })->sortByDesc('week_range')->values(),
             ];
         });
 
+        Log::info('responseData', $responseData->toArray());
 
         return $this->successResponse(
             __('errors.' . ResponseError::SUCCESS, locale: $this->language),
@@ -981,14 +1010,16 @@ class ShopController extends AdminBaseController
     }
 
 
+
+
     public function getDeliveryManDetail(Request $request, $id): JsonResponse
     {
-        Log::info('getDeliveryManDetail ', [
-            'deliveryman_id' => $id,
-            'timestamp' => now()->toDateTimeString(),
-            'week_range' => $request->query('week_range'),
-            'query_data' => $request->query(), // this will show all query params
-        ]);
+        // Log::info('getDeliveryManDetail ', [
+        //     'deliveryman_id' => $id,
+        //     'timestamp' => now()->toDateTimeString(),
+        //     'week_range' => $request->query('week_range'),
+        //     'query_data' => $request->query(), // this will show all query params
+        // ]);
         // Cache-based authorization check
         if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {
             return $this->errorResponse(
@@ -1060,11 +1091,11 @@ class ShopController extends AdminBaseController
 
     public function upDateDeliveryManWeeklyRecordStatus(Request $request, $deliverymanId)
     {
-        Log::info('upDateDeliveryManWeeklyRecordStatus started', [
-            'deliveryman_id' => $deliverymanId,
-            'timestamp' => now()->toDateTimeString(),
-            'request_data' => $request->all()
-        ]);
+        // Log::info('upDateDeliveryManWeeklyRecordStatus started', [
+        //     'deliveryman_id' => $deliverymanId,
+        //     'timestamp' => now()->toDateTimeString(),
+        //     'request_data' => $request->all()
+        // ]);
         $validated = Validator::make($request->all(), [
             'status' => 'required|in:paid,unpaid,canceled',
         ]);
@@ -1119,7 +1150,7 @@ class ShopController extends AdminBaseController
     //downloadDeliveryManInvoice
     public function downloadDeliveryManInvoice($id)
     {
-        Log::info('Starting invoice download process for DeliveryMan ID: ' . $id, ['request_data' => request()->all()]);
+        // Log::info('Starting invoice download process for DeliveryMan ID: ' . $id, ['request_data' => request()->all()]);
 
         if (app()->bound('debugbar')) {
             try {
@@ -1135,6 +1166,8 @@ class ShopController extends AdminBaseController
                 Log::warning('DeliveryMan not found for ID: ' . $id);
                 return response()->json(['message' => 'DeliveryMan not found'], 404);
             }
+
+            // Log::info("DeliveryMan Details: " . json_encode($deliveryMan->toArray()));
 
             $weekRange = request()->query('week_range');
             $weeklyReport = DeliveryManWeeklyReport::where('delivery_man_id', $id)
@@ -1213,11 +1246,11 @@ class ShopController extends AdminBaseController
                 'isRemoteEnabled' => true
             ]);
 
-            Log::info('Generating PDF for deliveryman invoice data.', [
-                'deliveryman_id' => $deliveryMan->id,
-                'order_count' => $orders->count(),
-                'total_commission' => $totalCommission
-            ]);
+            // Log::info('Generating PDF for deliveryman invoice data.', [
+            //     'deliveryman_id' => $deliveryMan->id,
+            //     'order_count' => $orders->count(),
+            //     'total_commission' => $totalCommission
+            // ]);
 
             $pdf = PDF::loadView('deliveryman-invoice', compact(
                 'deliveryMan',
@@ -1240,10 +1273,37 @@ class ShopController extends AdminBaseController
         }
     }
 
-    public function downloadDeliveryManInvoiceExcel(Request $request)
+    public function downloadDeliveryManInvoiceExcel(DeliveryManInvoiceExcelRequest $request)
     {
-        Log::info('downloadDeliveryManInvoiceExcel Runs', [
-            'query_data' => $request->all(),
-        ]);
+        // Log::info('downloadDeliveryManInvoiceExcel Runs', [
+        //     'query_data' => $request->all(),
+        // // ]);
+
+        //  $filteredData = $request->input('params.filteredData', []);
+
+        $filteredData = DeliveryManWeeklyReport::where('status', 'unpaid')->get()->toArray();
+
+        // Log::debug('Filtered data passed to Excel:', $filteredData);
+
+        $fileName = 'export/delivery-man-finance.xlsx';
+        $deliveryManInvoiceExport = new DeliveryManInvoiceExport($filteredData);
+
+        try {
+            $stored = Excel::store($deliveryManInvoiceExport, $fileName, 'public', \Maatwebsite\Excel\Excel::XLSX);
+
+            // Log::info('Excel store status: ' . ($stored ? 'Success' : 'Failed'));
+
+            if (!$stored || !\Storage::disk('public')->exists($fileName)) {
+                return $this->errorResponse("Excel file not found after generation", 404);
+            }
+
+            return $this->successResponse('Successfully exported', [
+                'path'      => \Storage::disk('public')->url($fileName),
+                'file_name' => $fileName
+            ]);
+        } catch (Throwable $e) {
+            report($e);
+            return $this->errorResponse('Error during export');
+        }
     }
 }

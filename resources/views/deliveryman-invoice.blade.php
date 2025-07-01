@@ -190,7 +190,7 @@
                         <div>
                             <strong style="font-size: 14px;">Invoice To:</strong>
                             <div style="color: #f59e0b; font-weight: bold; font-size: 16px; margin-top: 5px;">
-                                {{ $deliveryMan->translation->title ?? ($deliveryMan->seller ? $deliveryMan->seller->firstname . ' ' . $deliveryMan->seller->lastname : 'N/A') }}
+                                {{ $deliveryMan->translation->title ?? ($deliveryMan ? $deliveryMan->firstname . ' ' . $deliveryMan->lastname : 'N/A') }}
                             </div>
 
                             <div style="font-size: 14px; margin-top: 5px;">
