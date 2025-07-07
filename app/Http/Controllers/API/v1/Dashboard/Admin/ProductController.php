@@ -441,6 +441,32 @@ class ProductController extends AdminBaseController
     }
 
     /**
+     * Change Is Bogo Status of Model.
+     *
+     * @param string $uuid
+     * @return JsonResponse
+     */
+    public function setIsBogo(string $uuid): JsonResponse
+    {
+        Log::info("setIsBogo $uuid");
+        $product = $this->productRepository->productByUUID($uuid);
+
+        if (empty($product)) {
+            return $this->onErrorResponse([
+                'code'    => ResponseError::ERROR_404,
+                'message' => __('errors.' . ResponseError::ERROR_404, locale: $this->language)
+            ]);
+        }
+
+        $product->update(['is_bogo' => !$product->is_bogo]);
+
+        return $this->successResponse(
+            __('errors.' . ResponseError::RECORD_WAS_SUCCESSFULLY_UPDATED, locale: $this->language),
+            ProductResource::make($product)
+        );
+    }
+
+    /**
      * Change Active Status of Model.
      *
      * @param string $uuid

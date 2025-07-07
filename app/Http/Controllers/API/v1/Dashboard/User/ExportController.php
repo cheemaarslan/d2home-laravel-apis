@@ -2,15 +2,16 @@
 
 namespace App\Http\Controllers\API\v1\Dashboard\User;
 
-use App\Helpers\ResponseError;
-use App\Models\Language;
 use App\Models\Order;
+use App\Models\Language;
 use App\Models\Settings;
+use Illuminate\Http\Response;
+use App\Helpers\ResponseError;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Log;
 use Barryvdh\DomPDF\Facade\Pdf as PDF;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Routing\ResponseFactory;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Response;
 
 class ExportController extends UserBaseController
 {
@@ -50,8 +51,18 @@ class ExportController extends UserBaseController
 		Pdf::setOption(['dpi' => 150, 'defaultFont' => 'sans-serif']);
 
         $lang = $this->language;
+        Log::info('Exporting order to PDF', [
+            'order' => $order,
+            'language' => $lang,
+            'logo'     => $logo
+        ]);
 
-        $pdf = PDF::loadView('order-invoice', compact('order', 'logo', 'lang'));
+     $deliveryFreeCouponUsed = \DB::table('coupon_user')
+                   ->where('user_id', $order->user_id)
+                   ->where('order_id', $order->id)
+                   ->exists();
+
+        $pdf = PDF::loadView('order-invoice', compact('order', 'logo', 'lang', 'deliveryFreeCouponUsed'));
 
         return $pdf->download('invoice.pdf');
     }

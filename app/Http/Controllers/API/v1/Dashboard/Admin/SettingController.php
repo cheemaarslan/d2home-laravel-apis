@@ -2,18 +2,20 @@
 
 namespace App\Http\Controllers\API\v1\Dashboard\Admin;
 
-use App\Helpers\ResponseError;
+use File;
+use Throwable;
+use App\Models\User;
+use App\Models\Coupon;
 use App\Models\Referral;
 use App\Models\Settings;
-use App\Models\User;
-use App\Services\SettingService\SettingService;
-use File;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Artisan;
+use App\Helpers\ResponseError;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Artisan;
 use Psr\SimpleCache\InvalidArgumentException;
-use Throwable;
+use App\Services\SettingService\SettingService;
 
 class SettingController extends AdminBaseController
 {
@@ -43,6 +45,7 @@ class SettingController extends AdminBaseController
 	 */
 	public function store(Request $request): JsonResponse
 	{
+		Log::info('Settings request: ' . json_encode($request->all()));
 		$isRemoveRef = false;
 
 		foreach ($request->all() as $index => $item) {
@@ -72,6 +75,44 @@ class SettingController extends AdminBaseController
 			if ($index === 'referral_active' && $item) {
 				$isRemoveRef = true;
 			}
+
+
+		if ($index === 'welcome_coupon' && !empty($item)) {
+
+		
+			$existingCoupon = Coupon::where('for', 'new_user_only')->first();
+
+			if ($existingCoupon) {
+				
+				$existingCoupon->update([
+					'name' => $item,
+					'type' => 'fix',
+					'qty' => 1,
+					'img' => null,
+					'price' => 0,
+					'expired_at' => null,
+					'shop_id' => null,
+					'for' => 'new_user_only',
+					'updated_at' => now(),
+				]);
+			} else {
+			
+				Coupon::create([
+					'name' => $item,
+					'type' => 'fix',
+					'qty' => 1,
+					'img' => null,
+					'price' => 0,
+					'expired_at' => null,
+					'shop_id' => null,
+					'for' => 'new_user_only',
+					'created_at' => now(),
+					'updated_at' => now(),
+				]);
+			}
+		}
+			
+
 
 		}
 

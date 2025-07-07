@@ -23,14 +23,31 @@ class TransactionResource extends JsonResource
 		try {
 			$payable = 'App\\Http\\Resources\\' . str_replace('App\\Models\\', '', $this->payable_type) . 'Resource';
 			$payable = $payable::make($this->whenLoaded('payable'));
+            //if payable_type is order App\Models\Order then get payable_id 
+           $deliveryFee = 0;
+            if ($this->payable_type === 'App\\Models\\Order') {
+                $payable->id = $this->payable_id;
+                $payable->user_id = $this->user_id;
+
+                $deliveryFee = \DB::table('orders')
+                    ->where('id', $payable->id)
+                    ->value('rate_delivery_fee');
+
+                $deliveryFreeCouponUsed = \DB::table('coupon_user')
+                    ->where('user_id', $payable->user_id)
+                    ->where('order_id', $payable->id)
+                    ->exists();
+            }
 		} catch (Throwable $e) {
 			$payable = null;
 		}
 
+
+
         return [
             'id'                 => $this->when($this->id, $this->id),
             'payable_id'         => $this->when($this->payable_id, $this->payable_id),
-            'price'              => $this->when($this->price, $this->price),
+            'price'              => $this->when($this->price, isset($deliveryFreeCouponUsed) && $deliveryFreeCouponUsed ? $this->price - (float) $deliveryFee : $this->price),
             'payment_trx_id'     => $this->when($this->payment_trx_id, $this->payment_trx_id),
             'parent_id'		     => $this->when($this->parent_id, $this->parent_id),
             'note'               => $this->when($this->note, $this->note),

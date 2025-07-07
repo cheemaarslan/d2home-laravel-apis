@@ -1320,10 +1320,14 @@ namespace App\Models{
  * @method static Builder|self whereType($value)
  * @method static Builder|self whereUpdatedAt($value)
  * @mixin Eloquent
+ * @property int $is_for_new_users
  * @property-read \App\Models\Gallery|null $gallery
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\User> $users
+ * @property-read int|null $users_count
  * @method static \Illuminate\Database\Eloquent\Builder|Coupon onlyTrashed()
  * @method static \Illuminate\Database\Eloquent\Builder|Coupon whereDeletedAt($value)
  * @method static \Illuminate\Database\Eloquent\Builder|Coupon whereFor($value)
+ * @method static \Illuminate\Database\Eloquent\Builder|Coupon whereIsForNewUsers($value)
  * @method static \Illuminate\Database\Eloquent\Builder|Coupon withTrashed()
  * @method static \Illuminate\Database\Eloquent\Builder|Coupon withoutTrashed()
  */
@@ -3526,6 +3530,7 @@ namespace App\Models{
  * @property string $protein
  * @property string $fats
  * @property double $interval
+ * @property float $is_bogo
  * @property-read Brand $brand
  * @property-read Collection|Tag[] $tags
  * @property-read Category $category
@@ -3593,6 +3598,7 @@ namespace App\Models{
  * @method static \Illuminate\Database\Eloquent\Builder|Product whereCarbs($value)
  * @method static \Illuminate\Database\Eloquent\Builder|Product whereFats($value)
  * @method static \Illuminate\Database\Eloquent\Builder|Product whereInterval($value)
+ * @method static \Illuminate\Database\Eloquent\Builder|Product whereIsBogo($value)
  * @method static \Illuminate\Database\Eloquent\Builder|Product whereKcal($value)
  * @method static \Illuminate\Database\Eloquent\Builder|Product whereKitchenId($value)
  * @method static \Illuminate\Database\Eloquent\Builder|Product whereMaxQty($value)
@@ -4665,14 +4671,14 @@ namespace App\Models{
  * @property int $id
  * @property int $shop_id
  * @property string $week_identifier
- * @property mixed $order_ids
+ * @property string $order_ids
  * @property string $total_price
  * @property-read int|null $orders_count
  * @property string $total_commission
  * @property string $total_discounts
  * @property \Illuminate\Support\Carbon|null $created_at
  * @property \Illuminate\Support\Carbon|null $updated_at
- * @property string|null $status
+ * @property string $status
  * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\Order> $orders
  * @property-read \App\Models\Shop $shop
  * @method static \Illuminate\Database\Eloquent\Builder|ShopWeeklyReport byShopAndWeek($shopId, $weekIdentifier)
@@ -5495,6 +5501,8 @@ namespace App\Models{
  * @method static Builder|self withoutTrashed()
  * @mixin Eloquent
  * @property-read \App\Models\UserActivity|null $activity
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\Coupon> $coupons
+ * @property-read int|null $coupons_count
  * @property-read \App\Models\Gallery|null $gallery
  * @property-read \App\Models\Kitchen|null $kitchen
  * @property-read \App\Models\RequestModel|null $model

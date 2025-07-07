@@ -54,6 +54,7 @@ use Schema;
  * @property string $protein
  * @property string $fats
  * @property double $interval
+ * @property float $is_bogo
  * @property-read Brand $brand
  * @property-read Collection|Tag[] $tags
  * @property-read Category $category
@@ -122,6 +123,7 @@ class Product extends Model
         'active'     => 'bool',
         'addon'      => 'bool',
         'vegetarian' => 'bool',
+        'is_bogo'    => 'double',
 		'min_qty'    => 'int',
 		'max_qty'    => 'int',
     ];

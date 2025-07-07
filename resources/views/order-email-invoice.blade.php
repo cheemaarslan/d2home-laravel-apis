@@ -81,7 +81,7 @@ if ($order->delivery_type !== Order::DELIVERY) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ $title }}</title>
+    <title>Order Invoice</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -173,11 +173,11 @@ if ($order->delivery_type !== Order::DELIVERY) {
 <div class="container">
     <div class="header">
         <img src="{{$logo}}" alt="{{$logo}}">
-        <h2 class="blue-color">{{ $title }}</h2>
+        <h2 class="blue-color">Invoice</h2>
     </div>
     <div class="content">
         <div class="order-summary">
-            <h3>{{ $orderSummary }}</h3>
+            <h3>Order Summary</h3>
             <strong>{{ $userName }}</strong>
             <div class="order-number">
                 <div class="order-number-date">{{ $createdAt }}</div>
@@ -248,14 +248,23 @@ if ($order->delivery_type !== Order::DELIVERY) {
                     {{ $position === 'after' ? $symbol : '' }}
                 </strong>
             </p>
-            <p>
-                <strong>
-                    {{ $deliveryFeeTitle }}:
-                    {{ $position === 'before' ? $symbol : '' }}
-                    {{ number_format($order->rate_delivery_fee, 2)  }}
-                    {{ $position === 'after' ? $symbol : '' }}
-                </strong>
-            </p>
+           
+            @if($deliveryFreeCouponUsed)
+                <p>
+                    <strong>
+                        {{ $deliveryFeeTitle }}: {{ __('Delivery is free') }}
+                    </strong>
+                </p>
+            @else
+                <p>
+                    <strong>
+                        {{ $deliveryFeeTitle }}:
+                        {{ $position === 'before' ? $symbol : '' }}
+                        {{ number_format($order->rate_delivery_fee, 2)  }}
+                        {{ $position === 'after' ? $symbol : '' }}
+                    </strong>
+                </p>
+            @endif
             @if($order->rate_coupon_price)
             <p>
                 <strong>
@@ -276,14 +285,19 @@ if ($order->delivery_type !== Order::DELIVERY) {
                 </strong>
             </p>
             @endif
-            <p>
-                <strong>
-                    {{ $totalTitle }}:
-                    {{ $position === 'before' ? $symbol : '' }}
-                    {{ number_format($order->rate_total_price, 2)  }}
-                    {{ $position === 'after' ? $symbol : '' }}
-                </strong>
-            </p>
+           <p>
+    <strong>
+        {{ $totalTitle }}:
+        {{ $position === 'before' ? $symbol : '' }}
+        @if($deliveryFreeCouponUsed)
+            <span style="color: red">{{ number_format($order->rate_total_price - (float) $order->rate_delivery_fee, 2) }}</span>
+        @else
+          <span style="color: red">{{ number_format($order->rate_total_price, 2) }}</span>
+        @endif
+        {{ $position === 'after' ? $symbol : '' }}
+    </strong>
+</p>
+
         </div>
     </div>
     <div class="footer">

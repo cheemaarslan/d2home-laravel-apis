@@ -443,6 +443,7 @@ class ShopRepository extends CoreRepository
                 'addon',
                 'min_qty',
                 'max_qty',
+                'is_bogo',
             ])
             ->find($ids);
 
@@ -480,6 +481,7 @@ class ShopRepository extends CoreRepository
                             'max_qty',
                             'min_qty',
                             'addon',
+                            'is_bogo',
                         ]),
                     'products.translation' => fn($q) => $q->where('locale', $this->language),
                     'products.stock' => fn($q) => $q->with([
@@ -590,6 +592,7 @@ class ShopRepository extends CoreRepository
                 'min_qty',
                 'max_qty',
                 'addon',
+                'is_bogo',
             ])
             ->where([
                 ['shop_id', $shopId],

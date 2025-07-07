@@ -138,6 +138,8 @@ class OrderRepository extends CoreRepository implements OrderRepoInterface
 					'min_qty',
 					'max_qty',
 					'interval',
+					
+					'is_bogo',
 				]),
 				'product.unit.translation' => fn($q) => $q
 					->where(fn($q) => $q->where('locale', $this->language)->orWhere('locale', $locale)),
@@ -180,6 +182,7 @@ class OrderRepository extends CoreRepository implements OrderRepoInterface
 					'min_qty',
 					'max_qty',
 					'interval',
+					'is_bogo',
 				]),
 				'product.unit.translation' => fn($q) => $q->where(fn($q) => $q->where('locale', $this->language)->orWhere('locale', $locale)),
 
@@ -255,6 +258,7 @@ class OrderRepository extends CoreRepository implements OrderRepoInterface
 					'min_qty',
 					'max_qty',
 					'interval',
+					'is_bogo',
 				]),
 				'product.unit.translation' => fn($q) => $q
 					->where(fn($q) => $q->where('locale', $this->language)->orWhere('locale', $locale)),

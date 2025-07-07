@@ -955,13 +955,59 @@ class ShopController extends AdminBaseController
                 });
 
             foreach ($newOrders as $weekRange => $weekOrders) {
-                $this->updateWeeklyReport($deliveryMan, $weekRange, $weekOrders);
+                $this->updateDeliveryManWeeklyReport($deliveryMan, $weekRange, $weekOrders);
             }
         }
     }
 
+
+    protected function updateDeliveryManWeeklyReport($deliveryMan, $weekRange, $orders)
+    {
+        Log::info('Updating DeliveryMan Weekly Report', [
+            'delivery_man_id' => $deliveryMan->id,
+            'week_range' => $weekRange,
+            'orders_count' => $orders->count(),
+        ]);
+
+        DB::transaction(function () use ($deliveryMan, $weekRange, $orders) {
+            $newOrderIds = $orders->pluck('id')->toArray();
+            $newTotalPrice = $orders->sum('total_price') ?? 0;
+            $newCommission = $orders->sum('commission_fee') ?? 0;
+            $newDiscounts = $orders->sum('total_discount') ?? 0;
+
+            $report = DeliveryManWeeklyReport::where([
+                'delivery_man_id' => $deliveryMan->id,
+                'week_identifier' => $weekRange,
+            ])->first();
+
+            $existingOrderIds = $report ? json_decode($report->order_ids, true) : [];
+            $mergedOrderIds = array_unique(array_merge($existingOrderIds, $newOrderIds));
+
+            $existingTotalPrice = $report->total_price ?? 0;
+            $existingCommission = $report->total_commission ?? 0;
+            $existingDiscounts = $report->total_discounts ?? 0;
+
+            DeliveryManWeeklyReport::updateOrCreate(
+                [
+                    'delivery_man_id' => $deliveryMan->id,
+                    'week_identifier' => $weekRange,
+                ],
+                [
+                    'order_ids' => json_encode($mergedOrderIds),
+                    'total_price' => $existingTotalPrice + $newTotalPrice,
+                    'orders_count' => count($mergedOrderIds),
+                    'total_commission' => $existingCommission + $newCommission,
+                    'total_discounts' => $existingDiscounts + $newDiscounts,
+                ]
+            );
+        });
+    }
+
+
+
     protected function createWeeklyReport($deliveryMan, $weekRange, $orders)
     {
+
         DB::transaction(function () use ($deliveryMan, $weekRange, $orders) {
             \App\Models\DeliveryManWeeklyReport::create([
                 'delivery_man_id' => $deliveryMan->id,

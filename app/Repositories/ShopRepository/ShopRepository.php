@@ -589,6 +589,7 @@ class ShopRepository extends CoreRepository implements ShopRepoInterface
 						'min_qty',
 						'addon',
 						'vegetarian',
+						'is_bogo',
 					])
 					->where('active', true)
 					->where('addon', false)
@@ -638,6 +639,7 @@ class ShopRepository extends CoreRepository implements ShopRepoInterface
 					'min_qty',
 					'addon',
 					'vegetarian',
+					'is_bogo',
 				])
 				->where('active', true)
 				->where('addon', false)
@@ -687,6 +689,7 @@ class ShopRepository extends CoreRepository implements ShopRepoInterface
 					'min_qty',
 					'addon',
 					'vegetarian',
+					'is_bogo',
 				])
 				->when(data_get($filter, 'order_by'), function (Builder $query, $orderBy) {
 
@@ -801,6 +804,7 @@ class ShopRepository extends CoreRepository implements ShopRepoInterface
                 'min_qty',
 				'max_qty',
 				'interval',
+				'is_bogo',
 			])
             ->get();
 
@@ -871,6 +875,7 @@ class ShopRepository extends CoreRepository implements ShopRepoInterface
 						'max_qty',
 						'interval',
 						'addon',
+						'is_bogo',
 					]),
 				'children.products' => fn($q) => $q
 					->with([
@@ -918,6 +923,7 @@ class ShopRepository extends CoreRepository implements ShopRepoInterface
 						'max_qty',
 						'interval',
 						'addon',
+						'is_bogo',
 					])
 
 			])
@@ -1037,6 +1043,7 @@ class ShopRepository extends CoreRepository implements ShopRepoInterface
 				'max_qty',
 				'interval',
 				'addon',
+				'is_bogo',
 			])
 			->whereHas('translation', fn($q) => $q->where('locale', $this->language))
 			->whereHas('stocks', fn($q) => $q->where('quantity', '>', 0))
@@ -1123,6 +1130,7 @@ class ShopRepository extends CoreRepository implements ShopRepoInterface
 				'min_qty',
 				'max_qty',
 				'interval',
+				'is_bogo',
             ])
             ->where([
                 ['shop_id', $shopId],

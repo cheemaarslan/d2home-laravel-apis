@@ -2,12 +2,14 @@
 
 namespace App\Services\AuthService;
 
-use App\Events\Mails\SendEmailVerification;
-use App\Helpers\ResponseError;
 use App\Models\User;
+use App\Models\Coupon;
+use Illuminate\Support\Str;
 use App\Services\CoreService;
+use App\Helpers\ResponseError;
 use Illuminate\Http\JsonResponse;
 use Spatie\Permission\Models\Role;
+use App\Events\Mails\SendEmailVerification;
 
 class AuthByEmail extends CoreService
 {
@@ -38,6 +40,8 @@ class AuthByEmail extends CoreService
         if (!$user->hasAnyRole(Role::query()->pluck('name')->toArray())) {
             $user->syncRoles('user');
         }
+
+
 
         event((new SendEmailVerification($user)));
 

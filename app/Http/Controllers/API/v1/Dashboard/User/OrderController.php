@@ -2,25 +2,28 @@
 
 namespace App\Http\Controllers\API\v1\Dashboard\User;
 
+use Exception;
+use App\Models\Cart;
+use App\Models\Order;
+use App\Models\Coupon;
+use App\Models\Settings;
+use App\Models\OrderRefund;
+use App\Models\OrderRepeat;
+use App\Traits\Notification;
 use App\Helpers\ResponseError;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use App\Http\Resources\OrderResource;
 use App\Http\Requests\FilterParamsRequest;
 use App\Http\Requests\Order\AddRepeatRequest;
 use App\Http\Requests\Order\AddReviewRequest;
 use App\Http\Requests\Order\UserStoreRequest;
-use App\Http\Resources\OrderResource;
-use App\Models\Cart;
-use App\Models\Order;
-use App\Models\OrderRefund;
-use App\Models\OrderRepeat;
-use App\Models\Settings;
-use App\Repositories\Interfaces\OrderRepoInterface;
-use App\Services\Interfaces\OrderServiceInterface;
 use App\Services\OrderService\OrderRepeatService;
 use App\Services\OrderService\OrderReviewService;
+use App\Services\Interfaces\OrderServiceInterface;
+use App\Repositories\Interfaces\OrderRepoInterface;
 use App\Services\OrderService\OrderStatusUpdateService;
-use App\Traits\Notification;
-use Exception;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class OrderController extends UserBaseController
@@ -64,6 +67,7 @@ class OrderController extends UserBaseController
 	 */
 	public function store(UserStoreRequest $request): JsonResponse
 	{
+		
 		$validated = $request->validated();
 
 		if ((int)data_get(Settings::where('key', 'order_auto_approved')->first(), 'value') === 1) {
@@ -71,6 +75,41 @@ class OrderController extends UserBaseController
 		}
 
 		$validated['user_id'] = auth('sanctum')->id();
+
+
+		// ✅ Coupon logic
+		if (!empty($validated['coupon'])) {
+			$user = auth('sanctum')->user();
+			$coupon = Coupon::where('name', $validated['coupon'])->where('for', 'new_user_only')->first();
+
+			if (!$coupon) {
+				return $this->onErrorResponse([
+					'code' => ResponseError::ERROR_400,
+					'message' => __('Coupon not found.', locale: $this->language),
+				]);
+			}
+
+			if (!empty($coupon) && $coupon->for === 'new_user_only') {
+				// Check if user already has any orders
+				$userHasAnyCoupon = DB::table('coupon_user')
+				->where('user_id', $user->id)
+				->where('coupon_id', $coupon->id)
+				->exists();
+
+			if ($userHasAnyCoupon) {
+				return $this->onErrorResponse([
+					'code' => ResponseError::ERROR_400,
+					'message' => __('You have already used a coupon.', locale: $this->language),
+				]);
+			}
+
+			$validated['coupon_id'] = $coupon->id;
+			$validated['discount'] = $coupon->price ?? 0;
+
+			}
+		
+		}
+
 
 		$cart = Cart::with([
 			'userCarts:id,cart_id',
@@ -107,11 +146,158 @@ class OrderController extends UserBaseController
 			return $this->onErrorResponse($result);
 		}
 
+		//update coupon_user table add order_id
+		if (!empty($coupon) && $coupon->for === 'new_user_only') {
+				DB::table('coupon_user')->insert([
+				'user_id'   => $user->id,
+				'coupon_id' => $coupon->id,
+				'order_id'  => data_get($result, 'data.id'),
+				'used_at'   => now(),
+				'created_at' => now(),
+				'updated_at' => now(),
+			]);
+			Log::info('Coupon marked as used', [
+				'user_id' => auth('sanctum')->id(),
+				'coupon_id' => $validated['coupon_id'],
+			]);
+		}
+
 		return $this->successResponse(
 			__('errors.' . ResponseError::RECORD_WAS_SUCCESSFULLY_CREATED, locale: $this->language),
 			$this->orderRepository->reDataOrder(data_get($result, 'data'))
 		);
 	}
+
+	// public function store(UserStoreRequest $request): JsonResponse
+	// {
+	// 	$validated = $request->validated();
+
+	// 	if ((int)data_get(Settings::where('key', 'order_auto_approved')->first(), 'value') === 1) {
+	// 		$validated['status'] = Order::STATUS_ACCEPTED;
+	// 	}
+
+	// 	$validated['user_id'] = auth('sanctum')->id();
+
+	// 	// ✅ Coupon logic
+	// 	if (!empty($validated['coupon'])) {
+	// 		$user = auth('sanctum')->user();
+	// 		$coupon = Coupon::where('name', $validated['coupon'])->where('for', 'new_user_only')->first();
+
+	// 		if (!$coupon) {
+	// 			return $this->onErrorResponse([
+	// 				'code' => ResponseError::ERROR_400,
+	// 				'message' => __('Coupon not found.', locale: $this->language),
+	// 			]);
+	// 		}
+
+	// 		// Check if this coupon is for new users only
+	// 		// if ($coupon->is_for_new_users) {
+	// 		//     $hasOrders = Order::where('user_id', $user->id)->exists();
+	// 		//     if ($hasOrders) {
+	// 		//         return $this->onErrorResponse([
+	// 		//             'code' => ResponseError::ERROR_400,
+	// 		//             'message' => __('This coupon is for new users only.', locale: $this->language),
+	// 		//         ]);
+	// 		//     }
+	// 		// }
+
+	// 		// Check if user already has any coupon (only 1 coupon per user allowed)
+	// 		$userHasAnyCoupon = DB::table('coupon_user')
+	// 			->where('user_id', $user->id)
+	// 			->exists();
+
+	// 		if ($userHasAnyCoupon) {
+	// 			return $this->onErrorResponse([
+	// 				'code' => ResponseError::ERROR_400,
+	// 				'message' => __('You have already used a coupon.', locale: $this->language),
+	// 			]);
+	// 		}
+
+	// 		// All good, attach coupon to validated data
+	// 		$validated['coupon_id'] = $coupon->id;
+	// 		$validated['discount'] = $coupon->price ?? 0;
+
+	// 		// Pre-mark the coupon as used (you can also do it after order success)
+	// 		DB::table('coupon_user')->insert([
+	// 			'user_id'   => $user->id,
+	// 			'coupon_id' => $coupon->id,
+	// 			'used_at'   => now(),
+	// 			'created_at' => now(),
+	// 			'updated_at' => now(),
+	// 		]);
+	// 	}
+
+
+	// 	// ✅ Cart validation
+	// 	$cart = Cart::with([
+	// 		'userCarts:id,cart_id',
+	// 		// 'userCarts.cartDetails:id'
+	// 	])->select('id')
+	// 		->find(data_get($validated, 'cart_id'));
+
+	// 	if (empty($cart)) {
+	// 		\Log::error('Cart not found', [
+	// 			'cart_id' => data_get($validated, 'cart_id'),
+	// 			'user_id' => auth('sanctum')->id(),
+	// 		]);
+	// 		return $this->onErrorResponse([
+	// 			'code'      => ResponseError::ERROR_404,
+	// 			'message'   => __('errors.' . ResponseError::ERROR_404, locale: $this->language)
+	// 		]);
+	// 	}
+
+	// 	/** @var Cart $cart */
+	// 	if ($cart->user_carts_count === 0) {
+	// 		\Log::warning('Cart is empty', [
+	// 			'cart_id' => $cart->id,
+	// 			'user_id' => auth('sanctum')->id(),
+	// 		]);
+	// 		return $this->onErrorResponse([
+	// 			'code'    => ResponseError::ERROR_400,
+	// 			'message' => __('errors.' . ResponseError::USER_CARTS_IS_EMPTY, locale: $this->language)
+	// 		]);
+	// 	}
+
+	// 	if ($cart->userCarts()->withCount('cartDetails')->get()->sum('cart_details_count') === 0) {
+	// 		\Log::warning('Cart has no products', [
+	// 			'cart_id' => $cart->id,
+	// 			'user_id' => auth('sanctum')->id(),
+	// 		]);
+	// 		return $this->onErrorResponse([
+	// 			'code'    => ResponseError::ERROR_400,
+	// 			'message' => __('errors.' . ResponseError::PRODUCTS_IS_EMPTY, locale: $this->language)
+	// 		]);
+	// 	}
+
+	// 	// ✅ Create the order
+	// 	$result = $this->orderService->create($validated);
+
+	// 	if (!data_get($result, 'status')) {
+	// 		\Log::error('Order creation failed', [
+	// 			'user_id' => auth('sanctum')->id(),
+	// 			'validated' => $validated,
+	// 			'result' => $result,
+	// 		]);
+	// 		return $this->onErrorResponse($result);
+	// 	}
+
+	// 	// ✅ Mark coupon as used (optional)
+	// 	if (!empty($validated['coupon_id'])) {
+	// 		DB::table('coupon_user')
+	// 			->where('coupon_id', $validated['coupon_id'])
+	// 			->where('user_id', auth('sanctum')->id())
+	// 			->update(['used_at' => now()]);
+	// 		\Log::info('Coupon marked as used', [
+	// 			'user_id' => auth('sanctum')->id(),
+	// 			'coupon_id' => $validated['coupon_id'],
+	// 		]);
+	// 	}
+
+	// 	return $this->successResponse(
+	// 		__('errors.' . ResponseError::RECORD_WAS_SUCCESSFULLY_CREATED, locale: $this->language),
+	// 		$this->orderRepository->reDataOrder(data_get($result, 'data'))
+	// 	);
+	// }
 
 	/**
 	 * Display the specified resource.

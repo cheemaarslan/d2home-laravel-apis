@@ -6,6 +6,8 @@ use App\Models\Order;
 use App\Helpers\Utility;
 use App\Models\Transaction;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Auth;
 use App\Http\Resources\Booking\TableResource;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -40,7 +42,6 @@ class OrderResource extends JsonResource
 			if (count($shopLocation) === 2 && count($orderLocation) === 2) {
 				$location = (new Utility)->getDistance($shopLocation, $orderLocation);
 			}
-
 		}
 
 		$split = 1;
@@ -58,13 +59,34 @@ class OrderResource extends JsonResource
 			if ($split > 1 && $splitPaidCount !== $split) {
 				$paidBySplit = false;
 			}
-
 		}
+
+
+		$authUser = auth('sanctum')->user();
+
+
+		$deliveryFreeCouponUsed = false;
+
+		if ($authUser && method_exists($authUser, 'hasRole')) {
+
+
+			if ($authUser->hasRole('user')) {
+
+
+				$deliveryFreeCouponUsed = \DB::table('coupon_user')
+					->where('user_id', $order->user_id)
+					->where('order_id', $order->id)
+					->exists();
+			}
+		}
+
+
+
 
 		return [
 			'id'                            => $this->when($this->id, $this->id),
 			'user_id'                       => $this->when($this->user_id, $this->user_id),
-			'total_price'                   => $this->when($this->rate_total_price, $this->rate_total_price),
+			'total_price' 					=> $this->when($this->rate_total_price, $this->rate_total_price - ($deliveryFreeCouponUsed ? (float) $this->rate_delivery_fee : 0)),
 			'origin_price'                  => $this->when($this->origin_price, $this->origin_price),
 			'seller_fee'                    => $this->when($this->seller_fee, $this->seller_fee),
 			'coupon_price'                  => $this->when($this->coupon_price, $this->coupon_price),
@@ -79,7 +101,8 @@ class OrderResource extends JsonResource
 			'location'                      => $this->when($this->location, $this->location),
 			'address'                       => $this->when($this->address, $this->address),
 			'delivery_type'                 => $this->when($this->delivery_type, $this->delivery_type),
-			'delivery_fee'                  => $this->when($this->rate_delivery_fee, $this->rate_delivery_fee + $this->rate_driver_tip),
+			// 'delivery_fee'                  => $this->when($this->rate_delivery_fee, $this->rate_delivery_fee + $this->rate_driver_tip),
+			'delivery_fee' 					=> $this->when(true, $deliveryFreeCouponUsed ? 0 : ($this->rate_delivery_fee + $this->rate_driver_tip)),
 			'waiter_fee'                    => $this->when($this->rate_waiter_fee, $this->rate_waiter_fee + $this->rate_waiter_tip),
 			'delivery_date'                 => $this->when($this->delivery_date, $this->delivery_date),
 			'delivery_time'                 => $this->when($this->delivery_time, $this->delivery_time),

@@ -2,18 +2,19 @@
 
 namespace App\Models;
 
-use App\Traits\Loadable;
-use Database\Factories\CouponFactory;
 use Eloquent;
+use App\Models\User;
+use App\Traits\Loadable;
+use Illuminate\Support\Carbon;
+use Database\Factories\CouponFactory;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
-use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
-use Illuminate\Support\Carbon;
+use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 /**
  * App\Models\Coupon
@@ -83,6 +84,11 @@ class Coupon extends Model
     {
         return $this->belongsTo(Shop::class);
     }
+
+    public function users()
+{
+    return $this->belongsToMany(User::class, 'coupon_user');
+}
 
     public static function scopeCheckCoupon($query, $coupon, $shopId) {
         return $query

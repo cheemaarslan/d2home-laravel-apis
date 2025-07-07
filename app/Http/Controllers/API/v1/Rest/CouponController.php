@@ -47,7 +47,22 @@ class CouponController extends RestBaseController
      */
     public function check(CouponCheckRequest $request): JsonResponse
     {
-        $coupon = Coupon::checkCoupon($request->input('coupon'), $request->input('shop_id'))->first();
+
+        $couponCode = $request->input('coupon');
+        $coupon = Coupon::where('name', $couponCode)->first();
+       
+        $shopId = $request->input('shop_id');
+
+        if ($coupon->for === 'new_user_only') {
+            if (\DB::table('coupon_user')->where('user_id', $request->input('user_id'))->where('coupon_id', $coupon->id)->exists()) {
+                return $this->onErrorResponse([
+                    'code'    => ResponseError::ERROR_251,
+                    'message' => __('You already used this coupon', locale: $this->language)
+                ]);
+            }
+        } else {
+            $coupon = Coupon::checkCoupon($couponCode, $shopId)->first();
+        }
 
         if (empty($coupon)) {
             return $this->onErrorResponse([
@@ -60,7 +75,7 @@ class CouponController extends RestBaseController
                 $q->where('user_id', $request->input('user_id'))
                     ->orWhere('user_id', auth('sanctum')->id());
             })
-            ->where('name', $request->input('coupon'))
+            ->where('name', $couponCode)
             ->first();
 
         if (empty($result)) {

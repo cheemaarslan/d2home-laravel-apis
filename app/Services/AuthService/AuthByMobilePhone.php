@@ -148,6 +148,8 @@ class AuthByMobilePhone extends CoreService
 
         Cache::forget('sms-' . data_get($array, 'verifyId'));
 
+        
+
         return $this->successResponse(__('errors.'. ResponseError::SUCCESS, locale: $this->language), [
             'token' => $token,
             'user'  => UserResource::make($user),

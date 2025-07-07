@@ -2,24 +2,26 @@
 
 namespace App\Services\EmailSettingService;
 
-use App\Helpers\ResponseError;
-use App\Models\EmailSetting;
-use App\Models\EmailSubscription;
-use App\Models\EmailTemplate;
-use App\Models\Gallery;
+use DB;
+
+use View;
+use Storage;
+use Exception;
+use Throwable;
+use App\Models\User;
 use App\Models\Order;
+use App\Models\Gallery;
 use App\Models\Settings;
 use App\Models\Translation;
-use App\Models\User;
+use App\Models\EmailSetting;
+use App\Models\EmailTemplate;
 use App\Services\CoreService;
-use Barryvdh\DomPDF\Facade\Pdf as PDF;
-use Exception;
-use Illuminate\Support\Facades\Cache;
-use Log;
+use App\Helpers\ResponseError;
+use App\Models\EmailSubscription;
 use PHPMailer\PHPMailer\PHPMailer;
-use Storage;
-use Throwable;
-use View;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
+use Barryvdh\DomPDF\Facade\Pdf as PDF;
 
 class EmailSendService extends CoreService
 {
@@ -118,6 +120,8 @@ class EmailSendService extends CoreService
 	 */
 	public function sendVerify(User $user): array
     {
+        //get welcome_coupon from settings
+        $welcomeCoupon = Settings::where('key', 'welcome_coupon')->first()?->value;
         $emailTemplate = EmailTemplate::where('type', EmailTemplate::TYPE_ORDER)->first();
 
         $mail = $this->emailBaseAuth($emailTemplate?->emailSetting, $user);
@@ -126,12 +130,20 @@ class EmailSendService extends CoreService
 
             $mail->Subject  = data_get($emailTemplate, 'subject', 'Verify your email address');
 
-            $default        = 'Please enter code for verify your email: $verify_code';
+            $default        = "Please enter code for verify your email: \$verify_code.\nIf you create an account, you can use the coupon \"\$welcomeCoupon\" to get free delivery on your first order.";
             $body           = data_get($emailTemplate, 'body', $default);
             $altBody        = data_get($emailTemplate, 'alt_body', $default);
 
-            $mail->Body     = str_replace('$verify_code', $user->verify_token, $body);
-            $mail->AltBody  = str_replace('$verify_code', $user->verify_token, $altBody);
+            $mail->Body     = str_replace(
+                ['$verify_code', '$welcomeCoupon'],
+                [$user->verify_token, $welcomeCoupon],
+                $body
+            );
+            $mail->AltBody  = str_replace(
+                ['$verify_code', '$welcomeCoupon'],
+                [$user->verify_token, $welcomeCoupon],
+                $altBody
+            );
 
             if (!empty(data_get($emailTemplate, 'galleries'))) {
                 foreach ($emailTemplate->galleries as $gallery) {
@@ -188,10 +200,40 @@ class EmailSendService extends CoreService
 			Storage::put("public/images/$fileName", file_get_contents($logo));
 		}
 
+        //get user id from order
+        $userId = $order->user_id;
+        $orderId = $order->id;
+
+try {
+    $deliveryFreeCouponUsed = \DB::table('coupon_user')
+        ->where('user_id', $userId)
+        ->where('order_id', $orderId)
+        ->exists();
+
+    $coupon_user_rows = \DB::table('coupon_user')->get();
+
+    \Log::info('PDF Delivery Coupon Check', [
+        'order_id' => $orderId,
+        'user_id' => $userId,
+        'deliveryFreeCouponUsed' => $deliveryFreeCouponUsed,
+        'coupon_user_rows' => $coupon_user_rows,
+    ]);
+} catch (\Exception $e) {
+    \Log::error('Database query failed in sendOrder: ' . $e->getMessage(), [
+        'order_id' => $orderId,
+        'user_id' => $userId,
+    ]);
+    $deliveryFreeCouponUsed = false;
+    $coupon_user_rows = collect();
+}
+
+
+
 		$pdf = View::make(
 			'order-email-invoice',
 			[
 				'order' => $order,
+                'deliveryFreeCouponUsed' => $deliveryFreeCouponUsed,
 				'lang'  => $this->language,
 				'title' => $title,
 				'logo'  => $fileName ? "$host/storage/images/$fileName" : '',

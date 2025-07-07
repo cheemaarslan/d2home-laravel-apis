@@ -120,6 +120,7 @@ class ProductRepository extends CoreRepository implements ProductRepoInterface
                 'active',
                 'addon',
                 'vegetarian',
+                'is_bogo',
             ])
             ->whereHas('stocks', fn($q) => $q->where('quantity', '>', 0))
             ->whereHas('translation', fn($q) => $q

@@ -22,10 +22,7 @@ class CreateDeliveryManWeeklyReportsTable extends Migration
         $table->integer('orders_count');
         $table->decimal('total_commission', 10, 2);
         $table->decimal('total_discounts', 10, 2);
-<<<<<<< HEAD
         $table->string('status')->nullable(); // Optional: status of the report
-=======
->>>>>>> ce60b242eade5f4b082f654f90b5e5eca4ce4dd9
         $table->timestamps();
 
         $table->foreign('delivery_man_id')->references('id')->on('users')->onDelete('cascade');

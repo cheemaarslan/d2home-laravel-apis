@@ -910,6 +910,7 @@ Route::group(['prefix' => 'v1', 'middleware' => ['block.ip']], function () {
             Route::post('products/{uuid}/properties',    [Admin\ProductController::class, 'addProductProperties']);
             Route::post('products/{uuid}/extras',        [Admin\ProductController::class, 'addProductExtras']);
             Route::post('products/{uuid}/active',        [Admin\ProductController::class, 'setActive']);
+            Route::post('products/{uuid}/is-bogo',        [Admin\ProductController::class, 'setIsBogo']);
             Route::post('products/{uuid}/status/change', [Admin\ProductController::class, 'setStatus']);
             Route::post('products/multi/kitchen/update', [Admin\ProductController::class, 'multipleKitchenUpdate']);
             Route::apiResource('products',     Admin\ProductController::class);
