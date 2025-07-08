@@ -76,8 +76,6 @@ class OrderController extends UserBaseController
 
 		$validated['user_id'] = auth('sanctum')->id();
 
-
-		// ✅ Coupon logic
 		if (!empty($validated['coupon'])) {
 			$user = auth('sanctum')->user();
 			$coupon = Coupon::where('name', $validated['coupon'])->where('for', 'new_user_only')->first();

@@ -2,33 +2,34 @@
 
 namespace App\Services\OrderService;
 
-use App\Helpers\NotificationHelper;
-use App\Helpers\ResponseError;
-use App\Helpers\Utility;
-use App\Models\Booking\Table;
-use App\Models\DeliveryPoint;
-use App\Models\Language;
-use App\Models\OrderDetail;
-use App\Models\PaymentProcess;
-use App\Models\PushNotification;
-use App\Models\Receipt;
-use App\Models\Coupon;
-use App\Models\Currency;
-use App\Models\Order;
-use App\Models\Settings;
-use App\Models\Shop;
-use App\Models\Transaction;
-use App\Models\User;
-use App\Repositories\OrderRepository\OrderRepository;
-use App\Services\CartService\CartService;
-use App\Services\CoreService;
-use App\Services\EmailSettingService\EmailSendService;
-use App\Services\Interfaces\OrderServiceInterface;
-use App\Services\TransactionService\TransactionService;
-use App\Traits\Notification;
 use DB;
 use Exception;
 use Throwable;
+use App\Models\Shop;
+use App\Models\User;
+use App\Models\Order;
+use App\Models\Coupon;
+use App\Models\Receipt;
+use App\Helpers\Utility;
+use App\Models\Currency;
+use App\Models\Language;
+use App\Models\Settings;
+use App\Models\OrderDetail;
+use App\Models\Transaction;
+use App\Traits\Notification;
+use App\Models\Booking\Table;
+use App\Models\DeliveryPoint;
+use App\Services\CoreService;
+use App\Helpers\ResponseError;
+use App\Models\PaymentProcess;
+use App\Models\PushNotification;
+use App\Helpers\NotificationHelper;
+use Illuminate\Support\Facades\Log;
+use App\Services\CartService\CartService;
+use App\Services\Interfaces\OrderServiceInterface;
+use App\Repositories\OrderRepository\OrderRepository;
+use App\Services\EmailSettingService\EmailSendService;
+use App\Services\TransactionService\TransactionService;
 
 class OrderService extends CoreService implements OrderServiceInterface
 {
@@ -93,17 +94,31 @@ class OrderService extends CoreService implements OrderServiceInterface
 	 */
 	public function create(array $data): array
 	{
+		Log::info('OrderService: Starting order creation', ['data' => $data]);
+		
 		$checkPhoneIfRequired = $this->checkPhoneIfRequired($data);
 
 		if (!data_get($checkPhoneIfRequired, 'status')) {
+			Log::warning('OrderService: Phone validation failed', ['error' => $checkPhoneIfRequired]);
 			return $checkPhoneIfRequired;
 		}
 
 		/** @var Shop $shop */
 		$shop = Shop::find(data_get($data, 'shop_id'));
+		if (!$shop) {
+			Log::error('OrderService: Shop not found', ['shop_id' => data_get($data, 'shop_id')]);
+			return [
+				'status' => false,
+				'code' => ResponseError::ERROR_404,
+				'message' => __('errors.' . ResponseError::SHOP_NOT_FOUND),
+			];
+		}
+
+		Log::info('OrderService: Shop found', ['shop_id' => $shop->id, 'shop_name' => $shop->name ?? 'N/A']);
 
 		if (data_get($data, 'table_id') && !$shop?->new_order_after_payment) {
-
+			Log::info('OrderService: Checking for existing table order', ['table_id' => data_get($data, 'table_id')]);
+			
 			$order = Order::with([
 				'transaction' => fn($q) => $q->where('status', Transaction::STATUS_SPLIT)
 			])
@@ -128,71 +143,89 @@ class OrderService extends CoreService implements OrderServiceInterface
 				->first();
 
 			if (!empty($order)) {
+				Log::info('OrderService: Existing table order found, updating instead', ['existing_order_id' => $order->id]);
+				
 				/** @var Order $order */
-
 				if ($order->transaction?->status === Transaction::STATUS_SPLIT) {
+					Log::warning('OrderService: Order has split transaction status', ['order_id' => $order->id]);
 					return [
-						'status'  => false,
-						'code'    => ResponseError::ERROR_400,
+						'status' => false,
+						'code' => ResponseError::ERROR_400,
 						'message' => __('errors.' . ResponseError::WAIT_SPLIT),
 					];
 				}
 
 				return $this->update($order->id, $data);
 			}
+			
+			Log::info('OrderService: No existing table order found, proceeding with new order creation');
 		}
 
 		try {
-
 			if (isset($data['cart_id']) && Order::where('cart_id', $data['cart_id'])->exists()) {
+				Log::warning('OrderService: Duplicate cart detected', ['cart_id' => $data['cart_id']]);
 				return [
-					'status'  => false,
+					'status' => false,
 					'message' => 'duplicate',
-					'code'    => ResponseError::ERROR_501,
+					'code' => ResponseError::ERROR_501,
 				];
 			}
 
-			$order = DB::transaction(function () use ($data, $shop) {
+			Log::info('OrderService: Starting database transaction for order creation');
 
+			$order = DB::transaction(function () use ($data, $shop) {
+				Log::info('OrderService: Creating order with parameters');
+				
 				/** @var Order $order */
 				$order = $this->model()->updateOrCreate($this->setOrderParams($data, $shop));
+				
+				Log::info('OrderService: Order created', ['order_id' => $order->id]);
 
 				if (data_get($data, 'images.0')) {
+					Log::info('OrderService: Uploading order images', ['image_count' => count(data_get($data, 'images', []))]);
 					$order->update(['img' => data_get($data, 'images.0')]);
 					$order->uploads(data_get($data, 'images'));
 				}
 
 				if (data_get($data, 'cart_id')) {
+					Log::info('OrderService: Creating order details from cart', ['cart_id' => data_get($data, 'cart_id')]);
 					$order = (new OrderDetailService)->createOrderUser($order, data_get($data, 'cart_id', 0), data_get($data, 'notes', []));
 				} else {
+					Log::info('OrderService: Creating order details from products', ['product_count' => count(data_get($data, 'products', []))]);
 					$order = (new OrderDetailService)->create($order, data_get($data, 'products', []));
 				}
 
+				Log::info('OrderService: Calculating order totals');
 				$this->calculateOrder($order, $shop, $data);
 
 				if (data_get($data, 'payment_id') && !data_get($data, 'split')) {
-
+					Log::info('OrderService: Processing payment transaction', ['payment_id' => data_get($data, 'payment_id')]);
 					$data['payment_sys_id'] = data_get($data, 'payment_id');
-
 					$result = (new TransactionService)->orderTransaction($order->id, $data);
-
 					if (!data_get($result, 'status')) {
+						Log::error('OrderService: Payment transaction failed', ['error' => data_get($result, 'message')]);
 						throw new Exception(data_get($result, 'message'));
 					}
+					Log::info('OrderService: Payment transaction completed successfully');
 				}
 
 				if (in_array($order->status, $order->shop?->email_statuses ?? []) && ($order->email || $order->user?->email)) {
+					Log::info('OrderService: Sending order email notification', ['order_id' => $order->id]);
 					(new EmailSendService)->sendOrder($order);
 				}
 
 				return $order;
 			});
 
-			$order = $order->fresh($this->with());
+			Log::info('OrderService: Database transaction completed successfully', ['order_id' => $order->id]);
 
+			$order = $order->fresh($this->with());
+			
+			Log::info('OrderService: Sending new order notifications');
 			$this->newOrderNotification($order);
 
 			if ((int)data_get(Settings::where('key', 'order_auto_approved')->first(), 'value') === 1) {
+				Log::info('OrderService: Auto-approving order', ['order_id' => $order->id]);
 				(new NotificationHelper)->autoAcceptNotification(
 					$order,
 					$this->language,
@@ -200,18 +233,28 @@ class OrderService extends CoreService implements OrderServiceInterface
 				);
 			}
 
-			return [
-				'status'  => true,
-				'message' => ResponseError::NO_ERROR,
-				'data'    => $order
-			];
-		} catch (Throwable $e) {
-			$this->error($e);
+			Log::info('OrderService: Order creation completed successfully', ['order_id' => $order->id, 'total_price' => $order->total_price]);
 
 			return [
-				'status'    => false,
-				'message'   => $e->getMessage() . $e->getFile() . $e->getLine(),
-				'code'      => ResponseError::ERROR_501
+				'status' => true,
+				'message' => ResponseError::NO_ERROR,
+				'data' => $order
+			];
+		} catch (Throwable $e) {
+			Log::error('OrderService: Order creation failed', [
+				'error' => $e->getMessage(),
+				'file' => $e->getFile(),
+				'line' => $e->getLine(),
+				'trace' => $e->getTraceAsString(),
+				'data' => $data
+			]);
+			
+			$this->error($e);
+			
+			return [
+				'status' => false,
+				'message' => __('errors.' . ResponseError::ERROR_501),
+				'code' => ResponseError::ERROR_501
 			];
 		}
 	}

@@ -212,12 +212,7 @@ try {
 
     $coupon_user_rows = \DB::table('coupon_user')->get();
 
-    \Log::info('PDF Delivery Coupon Check', [
-        'order_id' => $orderId,
-        'user_id' => $userId,
-        'deliveryFreeCouponUsed' => $deliveryFreeCouponUsed,
-        'coupon_user_rows' => $coupon_user_rows,
-    ]);
+ 
 } catch (\Exception $e) {
     \Log::error('Database query failed in sendOrder: ' . $e->getMessage(), [
         'order_id' => $orderId,

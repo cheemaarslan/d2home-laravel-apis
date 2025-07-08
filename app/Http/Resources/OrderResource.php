@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Auth;
 use App\Http\Resources\Booking\TableResource;
+use App\Models\OrderDetail;
 use Illuminate\Http\Resources\Json\JsonResource;
 
 class OrderResource extends JsonResource
@@ -67,6 +68,7 @@ class OrderResource extends JsonResource
 
 		$deliveryFreeCouponUsed = false;
 
+
 		if ($authUser && method_exists($authUser, 'hasRole')) {
 
 
@@ -77,8 +79,15 @@ class OrderResource extends JsonResource
 					->where('user_id', $order->user_id)
 					->where('order_id', $order->id)
 					->exists();
+
+				$orderDetails = OrderDetail::where('order_id', $order->id)->get();
+$bogoOrderDetails = $orderDetails->where('note', 'BOGO free item')->values();
+$bogoDiscountTotal = $bogoOrderDetails->sum('total_price') ?? 0;
+
 			}
 		}
+
+
 
 
 
@@ -86,8 +95,14 @@ class OrderResource extends JsonResource
 		return [
 			'id'                            => $this->when($this->id, $this->id),
 			'user_id'                       => $this->when($this->user_id, $this->user_id),
-			'total_price' 					=> $this->when($this->rate_total_price, $this->rate_total_price - ($deliveryFreeCouponUsed ? (float) $this->rate_delivery_fee : 0)),
-			'origin_price'                  => $this->when($this->origin_price, $this->origin_price),
+			// 'total_price' 					=> $this->when($this->rate_total_price, $this->rate_total_price - ($deliveryFreeCouponUsed ? (float) $this->rate_delivery_fee : 0)),
+			'total_price' => $this->when(
+    $this->rate_total_price,
+    $this->rate_total_price
+    - ($deliveryFreeCouponUsed ? (float) $this->rate_delivery_fee : 0)
+    - $bogoDiscountTotal
+),
+			'origin_price'                  => $this->when($this->origin_price, $this->origin_price - $bogoDiscountTotal),
 			'seller_fee'                    => $this->when($this->seller_fee, $this->seller_fee),
 			'coupon_price'                  => $this->when($this->coupon_price, $this->coupon_price),
 			'rate'                          => $this->when($this->rate, $this->rate),

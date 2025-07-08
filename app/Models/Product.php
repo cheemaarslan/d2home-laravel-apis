@@ -123,7 +123,7 @@ class Product extends Model
         'active'     => 'bool',
         'addon'      => 'bool',
         'vegetarian' => 'bool',
-        'is_bogo'    => 'double',
+        'is_bogo'    => 'integer',
 		'min_qty'    => 'int',
 		'max_qty'    => 'int',
     ];

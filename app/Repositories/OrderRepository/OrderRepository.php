@@ -776,7 +776,7 @@ class OrderRepository extends CoreRepository implements OrderRepoInterface
 			$name = 'orders-report-products-' . Str::random(8);
 
 			try {
-//                ExportJob::dispatch("export/$name.xlsx", $query->get(), OrdersReportExport::class);
+			//                ExportJob::dispatch("export/$name.xlsx", $query->get(), OrdersReportExport::class);
 				Excel::store(new OrdersReportExport($orders->get()), "export/$name.xlsx",'public');
 
 				return [
