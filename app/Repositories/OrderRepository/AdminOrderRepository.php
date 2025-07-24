@@ -13,6 +13,7 @@ use App\Traits\SetCurrency;
 use DB;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Contracts\Pagination\Paginator;
+use Log;
 
 class AdminOrderRepository extends CoreRepository
 {
@@ -62,6 +63,10 @@ class AdminOrderRepository extends CoreRepository
 	 */
 	public function userOrdersPaginate(array $filter = [], string $paginate = 'simplePaginate'): Paginator
 	{
+		Log::info('AdminOrderRepository@userOrdersPaginate', [
+			'filter' => $filter,
+			'paginate' => $paginate,
+		]);
 		/** @var Order $order */
 		$order = $this->model();
 		$locale = data_get(Language::languagesList()->where('default', 1)->first(), 'locale');
@@ -97,6 +102,10 @@ class AdminOrderRepository extends CoreRepository
 	 */
 	public function userOrder(string $id, array $filter = []): LengthAwarePaginator
 	{
+		Log::info('AdminOrderRepository@userOrder', [
+			'id' => $id,
+			'filter' => $filter,
+		]);
 		$locale = data_get(Language::languagesList()->where('default', 1)->first(), 'locale');
 
 		/** @var User $user */

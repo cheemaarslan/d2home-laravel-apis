@@ -2,29 +2,30 @@
 
 namespace App\Http\Controllers\API\v1\Dashboard\Seller;
 
-use App\Exports\ProductExport;
-use App\Helpers\ResponseError;
-use App\Http\Requests\FilterParamsRequest;
-use App\Http\Requests\Product\addInStockRequest;
-use App\Http\Requests\Product\MultipleKitchenUpdateRequest;
-use App\Http\Requests\Product\SellerRequest;
-use App\Http\Resources\ProductResource;
-use App\Http\Resources\StockResource;
-use App\Imports\ProductImport;
-use App\Models\Language;
-use App\Models\Product;
-use App\Models\Settings;
-use App\Repositories\Interfaces\ProductRepoInterface;
-use App\Services\ProductService\ProductAdditionalService;
-use App\Services\ProductService\ProductService;
 use DB;
 use Hash;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
-use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
-use Illuminate\Support\Facades\Cache;
-use Maatwebsite\Excel\Facades\Excel;
 use Throwable;
+use App\Models\Product;
+use App\Models\Language;
+use App\Models\Settings;
+use Illuminate\Http\Request;
+use App\Exports\ProductExport;
+use App\Helpers\ResponseError;
+use App\Imports\ProductImport;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Log;
+use Maatwebsite\Excel\Facades\Excel;
+use App\Http\Resources\StockResource;
+use Illuminate\Support\Facades\Cache;
+use App\Http\Resources\ProductResource;
+use App\Http\Requests\FilterParamsRequest;
+use App\Http\Requests\Product\SellerRequest;
+use App\Services\ProductService\ProductService;
+use App\Http\Requests\Product\addInStockRequest;
+use App\Repositories\Interfaces\ProductRepoInterface;
+use App\Services\ProductService\ProductAdditionalService;
+use App\Http\Requests\Product\MultipleKitchenUpdateRequest;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class ProductController extends SellerBaseController
 {
@@ -54,7 +55,12 @@ class ProductController extends SellerBaseController
             $request->merge(['shop_id' => $this->shop->id])->all()
         );
 
-        return ProductResource::collection($products);
+
+
+
+
+
+return ProductResource::collection($products);
     }
 
     /**
@@ -199,6 +205,27 @@ class ProductController extends SellerBaseController
 
         return $this->successResponse(
             __('errors.' . ResponseError::RECORD_WAS_SUCCESSFULLY_DELETED, locale: $this->language)
+        );
+    }
+
+
+       public function sellerProductSetIsBogo (string $uuid): JsonResponse
+    {
+        Log::info("setIsBogo $uuid");
+        $product = $this->productRepository->productByUUID($uuid);
+
+        if (empty($product)) {
+            return $this->onErrorResponse([
+                'code'    => ResponseError::ERROR_404,
+                'message' => __('errors.' . ResponseError::ERROR_404, locale: $this->language)
+            ]);
+        }
+
+        $product->update(['is_bogo' => !$product->is_bogo]);
+
+        return $this->successResponse(
+            __('errors.' . ResponseError::RECORD_WAS_SUCCESSFULLY_UPDATED, locale: $this->language),
+            ProductResource::make($product)
         );
     }
 

@@ -54,7 +54,7 @@ class ProductResource extends JsonResource
             'min_qty'               => $this->when($this->min_qty, 		$this->min_qty),
             'max_qty'               => $this->when($this->max_qty, 		$this->max_qty),
             'interval'              => $this->when($this->interval, 	$this->interval),
-            'is_bogo'               => $this->when($this->is_bogo, 	$this->is_bogo),
+            'is_bogo'               => $this->is_bogo,
             'kitchen_id'            => $this->when($this->kitchen_id, 	$this->kitchen_id),
             'created_at'            => $this->when($this->created_at,   $this->created_at?->format('Y-m-d H:i:s') . 'Z'),
             'updated_at'            => $this->when($this->updated_at,   $this->updated_at?->format('Y-m-d H:i:s') . 'Z'),

@@ -162,146 +162,180 @@ class OrderDetailService extends CoreService
             Utility::calculateInventory($stock);
         }
 
-        Log::info('OrderDetailService: Update completed', ['order_id' => $order->id]);
+        Log::info('OrderDetailService: Update completed', ['order_id' => $order]);
         return $order;
     }
 
-    public function createOrderUser(Order $order, int $cartId, ?array $notes = []): Order
-    {
-        Log::info('OrderDetailService: Starting createOrderUser', ['order_id' => $order->id, 'cart_id' => $cartId]);
+ public function createOrderUser(Order $order, int $cartId, ?array $notes = []): Order
+{
+    Log::info('OrderDetailService: Starting createOrderUser', ['order_id' => $order->id, 'cart_id' => $cartId]);
 
-        $cart = clone Cart::with([
-            'userCarts.cartDetails:id,user_cart_id,stock_id,price,discount,quantity',
-            'userCarts.cartDetails.stock.bonus' => fn($q) => $q->where('expired_at', '>', now()),
-            'userCarts.cartDetails.stock' => fn($q) => $q->select('id', 'countable_id', 'price', 'quantity')->with([
-                'countable:id,status,shop_id,active,min_qty,max_qty,tax,img,interval,is_bogo'
-            ]),
-            'shop',
-            'shop.bonus' => fn($q) => $q->where('expired_at', '>', now()),
-        ])
-            ->select('id', 'total_price', 'shop_id')
-            ->find($cartId);
+    $cart = clone Cart::with([
+        'userCarts.cartDetails:id,user_cart_id,stock_id,price,discount,quantity',
+        'userCarts.cartDetails.stock.bonus' => fn($q) => $q->where('expired_at', '>', now()),
+        'userCarts.cartDetails.stock' => fn($q) => $q->select('id', 'countable_id', 'price', 'quantity')->with([
+            'countable:id,status,shop_id,active,min_qty,max_qty,tax,img,interval,is_bogo'
+        ]),
+        'shop',
+        'shop.bonus' => fn($q) => $q->where('expired_at', '>', now()),
+    ])
+        ->select('id', 'total_price', 'shop_id')
+        ->find($cartId);
 
-        if (!$cart) {
-            Log::warning('OrderDetailService: Cart not found', ['cart_id' => $cartId]);
-            return $order;
+    if (!$cart) {
+        Log::warning('OrderDetailService: Cart not found', ['cart_id' => $cartId]);
+        return $order;
+    }
+
+    Log::info('OrderDetailService: Cart found', ['cart_id' => $cart->id, 'user_carts_count' => $cart->userCarts->count()]);
+
+    (new CartService)->calculateTotalPrice($cart);
+
+    $cart = clone Cart::with([
+        'shop',
+        'userCarts.cartDetails' => fn($q) => $q->whereNull('parent_id'),
+        'userCarts.cartDetails.stock' => fn($q) => $q->select('id', 'countable_id', 'price', 'quantity')->with([
+            'countable:id,status,shop_id,active,min_qty,max_qty,tax,img,interval,is_bogo'
+        ]),
+        'userCarts.cartDetails.children.stock.countable',
+    ])->find($cart->id);
+
+    if (empty($cart?->userCarts)) {
+        Log::warning('OrderDetailService: No user carts found', ['cart_id' => $cart->id]);
+        return $order;
+    }
+
+    foreach ($cart->userCarts as $userCart) {
+        $cartDetails = $userCart->cartDetails;
+        if (empty($cartDetails)) {
+            Log::info('OrderDetailService: No cart details, deleting user cart', ['user_cart_id' => $userCart->id]);
+            $userCart->delete();
+            continue;
         }
 
-        Log::info('OrderDetailService: Cart found', ['cart_id' => $cart->id, 'user_carts_count' => $cart->userCarts->count()]);
+        Log::info('OrderDetailService: Processing user cart', ['user_cart_id' => $userCart->id, 'cart_details_count' => $cartDetails->count()]);
 
-        (new CartService)->calculateTotalPrice($cart);
-
-        $cart = clone Cart::with([
-            'shop',
-            'userCarts.cartDetails' => fn($q) => $q->whereNull('parent_id'),
-            'userCarts.cartDetails.stock' => fn($q) => $q->select('id', 'countable_id', 'price', 'quantity')->with([
-                'countable:id,status,shop_id,active,min_qty,max_qty,tax,img,interval,is_bogo'
-            ]),
-            'userCarts.cartDetails.children.stock.countable',
-        ])->find($cart->id);
-
-        if (empty($cart?->userCarts)) {
-            Log::warning('OrderDetailService: No user carts found', ['cart_id' => $cart->id]);
-            return $order;
-        }
-
-        foreach ($cart->userCarts as $userCart) {
-            $cartDetails = $userCart->cartDetails;
-            if (empty($cartDetails)) {
-                Log::info('OrderDetailService: No cart details, deleting user cart', ['user_cart_id' => $userCart->id]);
-                $userCart->delete();
+        foreach ($cartDetails as $cartDetail) {
+            $stock = $cartDetail->stock;
+            if (!$stock || !$stock->countable) {
+                Log::warning('OrderDetailService: Invalid stock or product', ['stock_id' => $cartDetail->stock_id]);
                 continue;
             }
 
-            Log::info('OrderDetailService: Processing user cart', ['user_cart_id' => $userCart->id, 'cart_details_count' => $cartDetails->count()]);
+            Log::info('OrderDetailService: Processing cart detail', [
+                'cart_detail_id' => $cartDetail->id,
+                'stock_id' => $stock->id,
+                'quantity' => $cartDetail->quantity,
+                'is_bogo' => $stock->countable->is_bogo ?? 'N/A'
+            ]);
 
-            foreach ($cartDetails as $cartDetail) {
-                $stock = $cartDetail->stock;
-                if (!$stock || !$stock->countable) {
-                    Log::warning('OrderDetailService: Invalid stock or product', ['stock_id' => $cartDetail->stock_id]);
-                    continue;
-                }
+            $cartDetail->setAttribute('note', data_get($notes, $stock->id, ''));
 
-                Log::info('OrderDetailService: Processing cart detail', [
-                    'cart_detail_id' => $cartDetail->id,
+            $actualQuantity = $this->actualQuantity($stock, $cartDetail->quantity);
+            Log::info('OrderDetailService: Stock check for paid item', [
+                'stock_id' => $stock->id,
+                'requested_quantity' => $cartDetail->quantity,
+                'actual_quantity' => $actualQuantity,
+                'available_quantity' => $stock->quantity
+            ]);
+
+            if ($actualQuantity <= 0) {
+                Log::warning('OrderDetailService: Insufficient stock for paid item', ['stock_id' => $stock->id, 'requested_quantity' => $cartDetail->quantity]);
+                continue;
+            }
+
+            $parent = $order->orderDetails()->create($this->setItemParams($cartDetail, $stock));
+            $stock->decrement('quantity', $actualQuantity);
+
+            Log::info('OrderDetailService: Created order detail', ['order_detail_id' => $parent->id, 'stock_id' => $stock->id]);
+
+            if ($stock->countable->is_bogo == 1) {
+                Log::info('OrderDetailService: BOGO detected', ['stock_id' => $stock->id, 'product_id' => $stock->countable->id]);
+                $bogoQuantity = $cartDetail->quantity;
+                $bogoAvailable = $stock->quantity >= $bogoQuantity ? $bogoQuantity : 0;
+                Log::info('OrderDetailService: BOGO stock check', [
                     'stock_id' => $stock->id,
-                    'quantity' => $cartDetail->quantity,
-                    'is_bogo' => $stock->countable->is_bogo ?? 'N/A'
+                    'bogo_quantity' => $bogoQuantity,
+                    'available_quantity' => $stock->quantity,
+                    'bogo_available' => $bogoAvailable
                 ]);
-
-                $cartDetail->setAttribute('note', data_get($notes, $stock->id, ''));
-
-                $actualQuantity = $this->actualQuantity($stock, $cartDetail->quantity);
-                Log::info('OrderDetailService: Stock check for paid item', [
-                    'stock_id' => $stock->id,
-                    'requested_quantity' => $cartDetail->quantity,
-                    'actual_quantity' => $actualQuantity,
-                    'available_quantity' => $stock->quantity
-                ]);
-
-                if ($actualQuantity <= 0) {
-                    Log::warning('OrderDetailService: Insufficient stock for paid item', ['stock_id' => $stock->id, 'requested_quantity' => $cartDetail->quantity]);
-                    continue;
-                }
-
-                $parent = $order->orderDetails()->create($this->setItemParams($cartDetail, $stock));
-                $stock->decrement('quantity', $actualQuantity);
-
-                Log::info('OrderDetailService: Created order detail', ['order_detail_id' => $parent->id, 'stock_id' => $stock->id]);
-
-                if ($stock->countable->is_bogo == 1) {
-                    Log::info('OrderDetailService: BOGO detected', ['stock_id' => $stock->id, 'product_id' => $stock->countable->id]);
-                    $bogoQuantity = $cartDetail->quantity;
-                    $bogoAvailable = $stock->quantity >= $bogoQuantity ? $bogoQuantity : 0;
-                    Log::info('OrderDetailService: BOGO stock check', [
+                if ($bogoAvailable > 0) {
+                    $bogoItem = [
                         'stock_id' => $stock->id,
-                        'bogo_quantity' => $bogoQuantity,
-                        'available_quantity' => $stock->quantity,
-                        'bogo_available' => $bogoAvailable
+                        'quantity' => $bogoQuantity,
+                        'price' => 0,
+                        'discount' => $stock->price ?? 0,
+                        'note' => 'BOGO free item'
+                    ];
+                    $bogoOrderDetail = $order->orderDetails()->create($this->setItemParams($bogoItem, $stock));
+                    $stock->decrement('quantity', $bogoQuantity);
+                    Log::info('OrderDetailService: BOGO applied', [
+                        'order_id' => $order->id,
+                        'order_detail_id' => $bogoOrderDetail->id,
+                        'stock_id' => $stock->id,
+                        'quantity' => $bogoQuantity
                     ]);
-                    if ($bogoAvailable > 0) {
-                        $bogoItem = [
-                            'stock_id' => $stock->id,
-                            'quantity' => $bogoQuantity,
-                            'price' => 0,
-                            'discount' => $stock->price ?? 0,
-                            'note' => 'BOGO free item'
-                        ];
-                        $bogoOrderDetail = $order->orderDetails()->create($this->setItemParams($bogoItem, $stock));
-                        $stock->decrement('quantity', $bogoQuantity);
-                        Log::info('OrderDetailService: BOGO applied', [
+
+                    // Process addons for BOGO item
+                    foreach ($cartDetail->children as $addon) {
+                        $addonStock = $addon->stock;
+                        if (!$addonStock) {
+                            Log::warning('OrderDetailService: Invalid addon stock for BOGO item', ['addon_stock_id' => $addon->stock_id]);
+                            continue;
+                        }
+
+                        Log::info('OrderDetailService: Processing addon for BOGO item', [
+                            'addon_stock_id' => $addonStock->id,
+                            'bogo_order_detail_id' => $bogoOrderDetail->id
+                        ]);
+
+                        $addonActualQuantity = $this->actualQuantity($addonStock, $addon->quantity);
+                        if ($addonActualQuantity <= 0) {
+                            Log::warning('OrderDetailService: Insufficient stock for BOGO addon', [
+                                'addon_stock_id' => $addonStock->id,
+                                'requested_quantity' => $addon->quantity
+                            ]);
+                            continue;
+                        }
+
+                        $addon->setAttribute('parent_id', $bogoOrderDetail->id);
+                        $addon->setAttribute('note', data_get($notes, $addonStock->id, ''));
+                        $order->orderDetails()->create($this->setItemParams($addon, $addonStock));
+                        $addonStock->decrement('quantity', $addonActualQuantity);
+                        Log::info('OrderDetailService: BOGO addon applied', [
                             'order_id' => $order->id,
                             'order_detail_id' => $bogoOrderDetail->id,
-                            'stock_id' => $stock->id,
-                            'quantity' => $bogoQuantity
+                            'addon_stock_id' => $addonStock->id,
+                            'quantity' => $addonActualQuantity
                         ]);
-                    } else {
-                        Log::warning('OrderDetailService: Insufficient stock for BOGO', ['stock_id' => $stock->id, 'bogo_quantity' => $bogoQuantity]);
                     }
-                }
-
-                foreach ($cartDetail->children as $addon) {
-                    $stock = $addon->stock;
-                    if (!$stock) {
-                        Log::warning('OrderDetailService: Invalid addon stock', ['addon_stock_id' => $addon->stock_id]);
-                        continue;
-                    }
-
-                    Log::info('OrderDetailService: Processing addon', ['addon_stock_id' => $stock->id]);
-                    $addon->setAttribute('parent_id', $parent?->id);
-                    $addon->setAttribute('note', data_get($notes, $stock->id, ''));
-                    $order->orderDetails()->create($this->setItemParams($addon, $stock));
-                    $stock->decrement('quantity', $addon->quantity);
+                } else {
+                    Log::warning('OrderDetailService: Insufficient stock for BOGO', ['stock_id' => $stock->id, 'bogo_quantity' => $bogoQuantity]);
                 }
             }
+
+            foreach ($cartDetail->children as $addon) {
+                $stock = $addon->stock;
+                if (!$stock) {
+                    Log::warning('OrderDetailService: Invalid addon stock', ['addon_stock_id' => $addon->stock_id]);
+                    continue;
+                }
+
+                Log::info('OrderDetailService: Processing addon', ['addon_stock_id' => $stock->id]);
+                $addon->setAttribute('parent_id', $parent?->id);
+                $addon->setAttribute('note', data_get($notes, $stock->id, ''));
+                $order->orderDetails()->create($this->setItemParams($addon, $stock));
+                $stock->decrement('quantity', $addon->quantity);
+            }
         }
-
-        Log::info('OrderDetailService: Deleting cart', ['cart_id' => $cart->id]);
-        $cart->delete();
-
-        Log::info('OrderDetailService: createOrderUser completed', ['order_id' => $order->id]);
-        return $order;
     }
+
+    Log::info('OrderDetailService: Deleting cart', ['cart_id' => $cart->id]);
+    $cart->delete();
+
+    Log::info('OrderDetailService: createOrderUser completed', ['order_id' => $order->id]);
+    return $order;
+}
 
     private function setItemParams($item, ?Stock $stock): array
     {

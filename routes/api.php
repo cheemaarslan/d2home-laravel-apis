@@ -580,6 +580,8 @@ Route::group(['prefix' => 'v1', 'middleware' => ['block.ip']], function () {
             Route::get('stocks/{uuid}/status',           [Seller\ProductController::class, 'setActiveStock']);
             Route::post('products/{uuid}/active',        [Seller\ProductController::class, 'setActive']);
             Route::post('products/multi/kitchen/update', [Seller\ProductController::class, 'multipleKitchenUpdate']);
+            Route::post('products/{uuid}/is-bogo',        [Seller\ProductController::class, 'sellerProductSetIsBogo']);
+
 
             Route::delete('products/delete',            [Seller\ProductController::class, 'destroy']);
             Route::apiResource('products',    Seller\ProductController::class);

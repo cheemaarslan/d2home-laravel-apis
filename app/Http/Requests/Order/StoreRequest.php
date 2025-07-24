@@ -46,6 +46,7 @@ class StoreRequest extends BaseRequest
             'coupon'                => 'nullable|string',
             'location'              => 'array',
             'location.latitude'     => 'numeric',
+            'discountAmount'      => 'nullable',
             'location.longitude'    => 'numeric',
             'address'               => 'array',
             'address_id'            => ['integer', Rule::exists('user_addresses', 'id')],

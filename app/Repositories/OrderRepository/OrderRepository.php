@@ -33,6 +33,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
+use Log;
 use Maatwebsite\Excel\Facades\Excel;
 use Throwable;
 
@@ -381,6 +382,13 @@ class OrderRepository extends CoreRepository implements OrderRepoInterface
 	 */
 	public function orderById(int $id, ?int $shopId = null, ?int $userId = null, ?string $phone = null, ?string $email = null): ?Order
 	{
+		Log::info('OrderRepository@orderById', [
+			'id' => $id,
+			'shopId' => $shopId,
+			'userId' => $userId,
+			'phone' => $phone,
+			'email' => $email,
+		]);
 		$locale = data_get(Language::languagesList()->where('default', 1)->first(), 'locale');
 
 		return $this->model()

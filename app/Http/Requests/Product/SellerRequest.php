@@ -44,6 +44,7 @@ class SellerRequest extends BaseRequest
             'addon'                 => 'boolean',
             'vegetarian'            => 'boolean',
             'interval'              => 'numeric',
+            'is_bogo'               => 'numeric',
             'kcal'                  => 'string|max:10',
             'carbs'                 => 'string|max:10',
             'protein'               => 'string|max:10',

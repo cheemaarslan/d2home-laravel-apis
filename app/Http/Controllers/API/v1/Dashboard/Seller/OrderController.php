@@ -25,6 +25,7 @@ use App\Traits\Notification;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Log;
 use Maatwebsite\Excel\Facades\Excel;
 use Throwable;
 
@@ -136,6 +137,10 @@ class OrderController extends SellerBaseController
      */
     public function show(int $id): JsonResponse
     {
+        Log::info('OrderController@show on order detail', [
+            'id' => $id,
+          
+        ]);
         $order = $this->orderRepository->orderById($id, $this->shop->id);
 
         if ($order) {
@@ -143,6 +148,13 @@ class OrderController extends SellerBaseController
                 __('errors.' . ResponseError::SUCCESS, locale: $this->language),
                 $this->orderRepository->reDataOrder($order)
             );
+        }
+
+        //check from order from details if product have note "BOGO free item" then get total_price and subtract from order total_price
+        $bogoItems = $order->orderDetails->filter(fn($item) => Str::contains($item->product->notes, 'BOGO free item'));
+        if ($bogoItems->isNotEmpty()) {
+            $totalBogoDiscount = $bogoItems->sum('total_price');
+            $order->total_price -= $totalBogoDiscount;
         }
 
         if (!Cache::get('tvoirifgjn.seirvjrc') || data_get(Cache::get('tvoirifgjn.seirvjrc'), 'active') != 1) {

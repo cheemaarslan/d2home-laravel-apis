@@ -2,19 +2,20 @@
 
 namespace App\Http\Controllers\API\v1\Dashboard\User;
 
-use App\Helpers\ResponseError;
-use App\Http\Requests\Cart\CalculateRequest;
-use App\Http\Requests\Cart\InsertProductsRequest;
-use App\Http\Requests\Cart\OpenCartOwnerRequest;
-use App\Http\Requests\Cart\StoreRequest;
-use App\Http\Requests\FilterParamsRequest;
-use App\Http\Resources\Cart\CartResource;
-use App\Models\Currency;
 use App\Models\User;
-use App\Repositories\CartRepository\CartRepository;
-use App\Services\CartService\CartService;
+use App\Models\Currency;
 use App\Traits\ApiResponse;
+use App\Helpers\ResponseError;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Log;
+use App\Http\Requests\Cart\StoreRequest;
+use App\Http\Resources\Cart\CartResource;
+use App\Services\CartService\CartService;
+use App\Http\Requests\FilterParamsRequest;
+use App\Http\Requests\Cart\CalculateRequest;
+use App\Http\Requests\Cart\OpenCartOwnerRequest;
+use App\Http\Requests\Cart\InsertProductsRequest;
+use App\Repositories\CartRepository\CartRepository;
 
 class CartController extends UserBaseController
 {
@@ -178,6 +179,7 @@ class CartController extends UserBaseController
      */
     public function insertProducts(InsertProductsRequest $request): JsonResponse
     {
+        Log::info('Inserting products into cart', ['data' => $request->validated()]);
         $result = $this->service->insertProducts($request->validated());
 
         if (!data_get($result, 'status')) {

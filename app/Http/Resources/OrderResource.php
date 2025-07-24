@@ -67,13 +67,13 @@ class OrderResource extends JsonResource
 
 
 		$deliveryFreeCouponUsed = false;
+		$bogoDiscountTotal = 0;
 
 
 		if ($authUser && method_exists($authUser, 'hasRole')) {
 
 
-			if ($authUser->hasRole('user')) {
-
+			if ($authUser->hasRole('user') || $authUser->hasRole('seller') || $authUser->hasRole('deliveryman') || $authUser->hasRole('admin')  ) {
 
 				$deliveryFreeCouponUsed = \DB::table('coupon_user')
 					->where('user_id', $order->user_id)
@@ -81,15 +81,10 @@ class OrderResource extends JsonResource
 					->exists();
 
 				$orderDetails = OrderDetail::where('order_id', $order->id)->get();
-$bogoOrderDetails = $orderDetails->where('note', 'BOGO free item')->values();
-$bogoDiscountTotal = $bogoOrderDetails->sum('total_price') ?? 0;
-
+				$bogoOrderDetails = $orderDetails->where('note', 'BOGO free item')->values();
+				$bogoDiscountTotal = $bogoOrderDetails->sum('total_price') ?? 0;
 			}
 		}
-
-
-
-
 
 
 		return [
@@ -97,11 +92,11 @@ $bogoDiscountTotal = $bogoOrderDetails->sum('total_price') ?? 0;
 			'user_id'                       => $this->when($this->user_id, $this->user_id),
 			// 'total_price' 					=> $this->when($this->rate_total_price, $this->rate_total_price - ($deliveryFreeCouponUsed ? (float) $this->rate_delivery_fee : 0)),
 			'total_price' => $this->when(
-    $this->rate_total_price,
-    $this->rate_total_price
-    - ($deliveryFreeCouponUsed ? (float) $this->rate_delivery_fee : 0)
-    - $bogoDiscountTotal
-),
+				$this->rate_total_price,
+				$this->rate_total_price
+					- ($deliveryFreeCouponUsed ? (float) $this->rate_delivery_fee : 0)
+					- $bogoDiscountTotal
+			),
 			'origin_price'                  => $this->when($this->origin_price, $this->origin_price - $bogoDiscountTotal),
 			'seller_fee'                    => $this->when($this->seller_fee, $this->seller_fee),
 			'coupon_price'                  => $this->when($this->coupon_price, $this->coupon_price),

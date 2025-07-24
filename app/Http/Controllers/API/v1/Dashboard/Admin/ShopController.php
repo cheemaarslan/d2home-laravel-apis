@@ -2,15 +2,15 @@
 
 namespace App\Http\Controllers\API\v1\Dashboard\Admin;
 
-use App\Http\Requests\ShopInvoiceExcelRequest;
 use Throwable;
 use Carbon\Carbon;
 use App\Models\Shop;
 use App\Models\User;
+use App\Models\Order;
 use App\Models\Settings;
 use App\Exports\ShopExport;
-use App\Exports\ShopInvoiceExport;
 use App\Imports\ShopImport;
+use App\Models\OrderDetail;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use App\Helpers\ResponseError;
@@ -19,8 +19,10 @@ use App\Models\ShopWeeklyReport;
 
 use Illuminate\Http\JsonResponse;
 
-use Illuminate\Support\Facades\DB;
+use App\Exports\ShopInvoiceExport;
 
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Http\Resources\ShopResource;
 use App\Http\Resources\UserResource;
@@ -28,24 +30,23 @@ use Illuminate\Support\Facades\View;
 use Maatwebsite\Excel\Facades\Excel;
 use App\Http\Resources\OrderResource;
 use Illuminate\Support\Facades\Cache;
+use App\Models\DeliveryManWeeklyReport;
 use Illuminate\Support\Facades\Storage;
 use App\Http\Requests\Shop\StoreRequest;
+use App\Exports\DeliveryManInvoiceExport;
 use Illuminate\Support\Facades\Validator;
 use App\Http\Requests\FilterParamsRequest;
 use App\Repositories\SellerFinanceRepository;
 use App\Http\Requests\Shop\ImageDeleteRequest;
+use App\Http\Requests\ShopInvoiceExcelRequest;
 use App\Services\Interfaces\ShopServiceInterface;
 use App\Services\ShopServices\ShopActivityService;
 use App\Http\Requests\Shop\ShopStatusChangeRequest;
-use App\Models\DeliveryManWeeklyReport;
-use App\Models\Order;
 use App\Repositories\UserRepository\UserRepository;
-use App\Repositories\ShopRepository\AdminShopRepository;
-use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use App\Http\Requests\DeliveryManInvoiceExcelRequest;
-use App\Exports\DeliveryManInvoiceExport;
+use App\Repositories\ShopRepository\AdminShopRepository;
 use App\Http\Requests\DeliveryManSetting\DeliveryManRequest;
-use Illuminate\Support\Collection;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class ShopController extends AdminBaseController
 {
@@ -631,11 +632,6 @@ class ShopController extends AdminBaseController
 
     public function getShopDetailWithOrders(Request $request)
     {
-        // Log::info('getShopDetailWithOrders started', [
-        //     'request_data' => $request->all(),
-        //     'timestamp' => now()->toDateTimeString()
-        // ]);
-
         $recordId = $request->input('record_id');
         if (!is_numeric($recordId) || $recordId <= 0) {
             Log::warning('Invalid record_id', ['record_id' => $recordId]);
@@ -653,8 +649,6 @@ class ShopController extends AdminBaseController
                 'message' => __('errors.' . ResponseError::ERROR_404, locale: $this->language)
             ]);
         }
-
-
 
         $orderIds = json_decode($weeklyReport->order_ids, true);
         if (json_last_error() !== JSON_ERROR_NONE) {
@@ -681,12 +675,42 @@ class ShopController extends AdminBaseController
             abort(403);
         }
 
-        $orders = $shop->orders;
-        Log::info('Orders for ShopWeeklyReport', [
-            'record_id' => $recordId,
-            'order_ids' => $orderIds,
-            'orders' => $orders->toArray(),
-        ]);
+       
+
+
+        $orderDetailsGrouped = OrderDetail::whereIn('order_id', $orderIds)->get()->groupBy('order_id');
+
+        foreach ($orderDetailsGrouped as $orderId => $details) {
+    $total = $details->sum('total_price');
+    $bogo = $details->filter(fn($d) => str_contains($d->note ?? '', 'BOGO free item'))->sum('total_price');
+    $final = $total - $bogo;
+
+    $orderPriceBreakdown[] = [
+        'order_id' => $orderId,
+        'total_price' => $total,
+        'bogo_price' => $bogo,
+        'final_price' => $final,
+    ];
+  
+  
+}
+
+ $orders = $shop->orders;
+
+$breakdownMap = collect($orderPriceBreakdown)->keyBy('order_id');
+
+foreach ($orders as $order) {
+    $orderId = $order->id;
+
+    if (isset($breakdownMap[$orderId])) {
+        $bogoPrice = $breakdownMap[$orderId]['bogo_price'] ?? 0;
+        $order->total_price = ($order->total_price ?? 0) - $bogoPrice;
+    }
+}
+
+//add log
+
+   
         $totalCommission = $weeklyReport->total_commission ?? 0;
         $totalDiscounts = $weeklyReport->total_discounts ?? 0;
         $totalSales = $weeklyReport->total_price ?? 0;
@@ -705,22 +729,6 @@ class ShopController extends AdminBaseController
 
         $shop->setRelation('orders', $orders);
         $sellerName = $shop->seller->firstname . ' ' . $shop->seller->lastname ?? 'Unknown Seller';
-
-        // Log::info('Shop detail with orders fetched', [
-        //     'shop' => $shop,
-        //     'orders_count' => $orders->count(),
-        //     'total_sales' => $totalSales,
-        //     'total_commission' => $totalCommission,
-        //     'total_discounts' => $totalDiscounts,
-        //     'sum_of_order_discounts' => $sumOfOrderDiscounts,
-        //     'total_charges_and_discounts' => $totalChargesAndDiscounts,
-        //     'net_amount_payable' => $netAmountPayable,
-        //     'record_id' => $recordId,
-        //     'orders' => $orders->toArray(),
-        //     'sellerName' => $sellerName
-        // ]);
-
-        //get seller name
 
         return $this->successResponse(
             __('errors.' . ResponseError::SUCCESS, locale: $this->language),
@@ -1047,7 +1055,6 @@ class ShopController extends AdminBaseController
             ];
         });
 
-        Log::info('responseData', $responseData->toArray());
 
         return $this->successResponse(
             __('errors.' . ResponseError::SUCCESS, locale: $this->language),

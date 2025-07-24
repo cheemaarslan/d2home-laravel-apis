@@ -5,6 +5,7 @@ namespace App\Http\Resources;
 use App\Models\Transaction;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Log;
 use Throwable;
 
 class TransactionResource extends JsonResource
@@ -18,38 +19,70 @@ class TransactionResource extends JsonResource
     public function toArray($request): array
     {
         /** @var Transaction|JsonResource $this */
-		/** @var OrderResource|ParcelOrderResource $payable */
+        /** @var OrderResource|ParcelOrderResource $payable */
 
-		try {
-			$payable = 'App\\Http\\Resources\\' . str_replace('App\\Models\\', '', $this->payable_type) . 'Resource';
-			$payable = $payable::make($this->whenLoaded('payable'));
-            //if payable_type is order App\Models\Order then get payable_id 
-           $deliveryFee = 0;
+        try {
+            $payableClass = 'App\\Http\\Resources\\' . str_replace('App\\Models\\', '', $this->payable_type) . 'Resource';
+            $payable = $payableClass::make($this->whenLoaded('payable'));
+
+            $deliveryFee = 0;
+            $deliveryFreeCouponUsed = null;
+            $bogoFreeItemPrice = null;
+
             if ($this->payable_type === 'App\\Models\\Order') {
-                $payable->id = $this->payable_id;
-                $payable->user_id = $this->user_id;
+                // Important: you cannot set $payable->id directly — it's a Resource, not a model.
+                // So instead, use $this->payable_id directly.
 
                 $deliveryFee = \DB::table('orders')
-                    ->where('id', $payable->id)
-                    ->value('rate_delivery_fee');
+                    ->where('id', $this->payable_id)
+                    ->value('delivery_fee');
+
 
                 $deliveryFreeCouponUsed = \DB::table('coupon_user')
-                    ->where('user_id', $payable->user_id)
-                    ->where('order_id', $payable->id)
+                    ->where('user_id', $this->user_id)
+                    ->where('order_id', $this->payable_id)
                     ->exists();
             }
-		} catch (Throwable $e) {
-			$payable = null;
-		}
+        } catch (\Throwable $e) {
+            Log::error('TransactionResource Exception: ' . $e->getMessage());
+            $payable = null;
+            $bogoFreeItemPrice = null;
+        }
 
+
+        $authUser = auth('sanctum')->user();
+
+        if ($authUser && method_exists($authUser, 'hasRole')) {
+
+
+            if ($authUser->hasRole('user') || $authUser->hasRole('seller') || $authUser->hasRole('deliveryman') || $authUser->hasRole('admin')) {
+
+                $bogoFreeItemPrice = \DB::table('order_details')
+                    ->where('order_id', $this->payable_id)
+                    ->where('note', 'BOGO free item')
+                    ->get();
+
+                //get total_price of BOGO free item
+                if ($bogoFreeItemPrice->isNotEmpty()) {
+                    $bogoFreeItemPrice = $bogoFreeItemPrice->sum('total_price');
+                } else {
+                    $bogoFreeItemPrice = null;
+                }
+            }
+        }
 
 
         return [
             'id'                 => $this->when($this->id, $this->id),
             'payable_id'         => $this->when($this->payable_id, $this->payable_id),
-            'price'              => $this->when($this->price, isset($deliveryFreeCouponUsed) && $deliveryFreeCouponUsed ? $this->price - (float) $deliveryFee : $this->price),
+            'price' => $this->when(
+                $this->price,
+                isset($deliveryFreeCouponUsed) && $deliveryFreeCouponUsed
+                    ? $this->price - (float) $deliveryFee - (float) $bogoFreeItemPrice
+                    : $this->price - (float) $bogoFreeItemPrice
+            ),
             'payment_trx_id'     => $this->when($this->payment_trx_id, $this->payment_trx_id),
-            'parent_id'		     => $this->when($this->parent_id, $this->parent_id),
+            'parent_id'             => $this->when($this->parent_id, $this->parent_id),
             'note'               => $this->when($this->note, $this->note),
             'request'            => $this->when($this->request, $this->request),
             'perform_time'       => $this->when($this->perform_time, $this->perform_time),
@@ -61,13 +94,13 @@ class TransactionResource extends JsonResource
             'deleted_at'         => $this->when($this->deleted_at, $this->deleted_at?->format('Y-m-d H:i:s') . 'Z'),
 
             // Relations
-            'user' 				 => UserResource::make($this->whenLoaded('user')),
-            'payment_system' 	 => PaymentResource::make($this->whenLoaded('paymentSystem')),
-            'payment_process'	 => PaymentProcessResource::make($this->whenLoaded('paymentProcess')),
-			'children' 			 => self::collection($this->whenLoaded('children')),
-			'parent'   			 => self::make($this->whenLoaded('parent')),
+            'user'                  => UserResource::make($this->whenLoaded('user')),
+            'payment_system'      => PaymentResource::make($this->whenLoaded('paymentSystem')),
+            'payment_process'     => PaymentProcessResource::make($this->whenLoaded('paymentProcess')),
+            'children'              => self::collection($this->whenLoaded('children')),
+            'parent'                => self::make($this->whenLoaded('parent')),
 
-            'payable' 			 => $payable,
+            'payable'              => $payable,
         ];
     }
 }

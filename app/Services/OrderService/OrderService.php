@@ -99,14 +99,12 @@ class OrderService extends CoreService implements OrderServiceInterface
 		$checkPhoneIfRequired = $this->checkPhoneIfRequired($data);
 
 		if (!data_get($checkPhoneIfRequired, 'status')) {
-			Log::warning('OrderService: Phone validation failed', ['error' => $checkPhoneIfRequired]);
 			return $checkPhoneIfRequired;
 		}
 
 		/** @var Shop $shop */
 		$shop = Shop::find(data_get($data, 'shop_id'));
 		if (!$shop) {
-			Log::error('OrderService: Shop not found', ['shop_id' => data_get($data, 'shop_id')]);
 			return [
 				'status' => false,
 				'code' => ResponseError::ERROR_404,
@@ -114,10 +112,7 @@ class OrderService extends CoreService implements OrderServiceInterface
 			];
 		}
 
-		Log::info('OrderService: Shop found', ['shop_id' => $shop->id, 'shop_name' => $shop->name ?? 'N/A']);
-
 		if (data_get($data, 'table_id') && !$shop?->new_order_after_payment) {
-			Log::info('OrderService: Checking for existing table order', ['table_id' => data_get($data, 'table_id')]);
 			
 			$order = Order::with([
 				'transaction' => fn($q) => $q->where('status', Transaction::STATUS_SPLIT)
@@ -143,11 +138,9 @@ class OrderService extends CoreService implements OrderServiceInterface
 				->first();
 
 			if (!empty($order)) {
-				Log::info('OrderService: Existing table order found, updating instead', ['existing_order_id' => $order->id]);
 				
 				/** @var Order $order */
 				if ($order->transaction?->status === Transaction::STATUS_SPLIT) {
-					Log::warning('OrderService: Order has split transaction status', ['order_id' => $order->id]);
 					return [
 						'status' => false,
 						'code' => ResponseError::ERROR_400,
@@ -158,12 +151,10 @@ class OrderService extends CoreService implements OrderServiceInterface
 				return $this->update($order->id, $data);
 			}
 			
-			Log::info('OrderService: No existing table order found, proceeding with new order creation');
 		}
 
 		try {
 			if (isset($data['cart_id']) && Order::where('cart_id', $data['cart_id'])->exists()) {
-				Log::warning('OrderService: Duplicate cart detected', ['cart_id' => $data['cart_id']]);
 				return [
 					'status' => false,
 					'message' => 'duplicate',
@@ -174,15 +165,14 @@ class OrderService extends CoreService implements OrderServiceInterface
 			Log::info('OrderService: Starting database transaction for order creation');
 
 			$order = DB::transaction(function () use ($data, $shop) {
-				Log::info('OrderService: Creating order with parameters');
+				Log::info('OrderService: Creating order with parameters', ['data' => $data, 'shop' => $shop]);
 				
 				/** @var Order $order */
 				$order = $this->model()->updateOrCreate($this->setOrderParams($data, $shop));
 				
-				Log::info('OrderService: Order created', ['order_id' => $order->id]);
+				Log::info('OrderService: Order created', ['order_id' => $order]);
 
 				if (data_get($data, 'images.0')) {
-					Log::info('OrderService: Uploading order images', ['image_count' => count(data_get($data, 'images', []))]);
 					$order->update(['img' => data_get($data, 'images.0')]);
 					$order->uploads(data_get($data, 'images'));
 				}
@@ -203,7 +193,6 @@ class OrderService extends CoreService implements OrderServiceInterface
 					$data['payment_sys_id'] = data_get($data, 'payment_id');
 					$result = (new TransactionService)->orderTransaction($order->id, $data);
 					if (!data_get($result, 'status')) {
-						Log::error('OrderService: Payment transaction failed', ['error' => data_get($result, 'message')]);
 						throw new Exception(data_get($result, 'message'));
 					}
 					Log::info('OrderService: Payment transaction completed successfully');
@@ -217,15 +206,12 @@ class OrderService extends CoreService implements OrderServiceInterface
 				return $order;
 			});
 
-			Log::info('OrderService: Database transaction completed successfully', ['order_id' => $order->id]);
 
 			$order = $order->fresh($this->with());
 			
-			Log::info('OrderService: Sending new order notifications');
 			$this->newOrderNotification($order);
 
 			if ((int)data_get(Settings::where('key', 'order_auto_approved')->first(), 'value') === 1) {
-				Log::info('OrderService: Auto-approving order', ['order_id' => $order->id]);
 				(new NotificationHelper)->autoAcceptNotification(
 					$order,
 					$this->language,
@@ -233,7 +219,6 @@ class OrderService extends CoreService implements OrderServiceInterface
 				);
 			}
 
-			Log::info('OrderService: Order creation completed successfully', ['order_id' => $order->id, 'total_price' => $order->total_price]);
 
 			return [
 				'status' => true,
@@ -370,10 +355,12 @@ class OrderService extends CoreService implements OrderServiceInterface
 	 */
 	public function calculateOrder(Order $order, ?Shop $shop, array $data): void
 	{
+		Log::info('OrderService: Calculating order totals', ['order_id' => $order->id, 'data' => $data]);
 		/** @var Order $order */
 		$order = $order->fresh(['orderDetails', 'transaction', 'user', 'coupon', 'shop.subscription.subscription']);
 
 		$totalDiscount  = $order->orderDetails->sum('discount');
+	
 		$totalPrice     = $order->orderDetails->sum('total_price');
 
 		$shopTax = max($totalPrice / 100 * $shop?->tax, 0);
@@ -454,6 +441,15 @@ class OrderService extends CoreService implements OrderServiceInterface
 			}
 		}
 
+	
+
+			if (data_get($data, 'discountAmount') > 0) {
+			$totalDiscount += data_get($data, 'discountAmount');
+			$totalPrice -= data_get($data, 'discountAmount');
+		}
+		Log::info('OrderService: Total discount calculated', ['order_id' => $order->id, 'total_discount' => $totalDiscount, 'total_price' => $totalPrice]);
+
+
 		$order->update([
 			'total_price'    => $totalPrice,
 			'delivery_fee'   => $deliveryFee,
@@ -466,6 +462,8 @@ class OrderService extends CoreService implements OrderServiceInterface
 			'status'		 => $status,
 			'waiter_id'		 => $waiterId,
 		]);
+
+		Log::info('OrderService: Order updated98', ['order_id' => $order]);
 
 		$isSubscribe = (int)Settings::where('key', 'by_subscription')->first()?->value;
 

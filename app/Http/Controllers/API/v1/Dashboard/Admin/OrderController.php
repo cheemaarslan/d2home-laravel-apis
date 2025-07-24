@@ -71,27 +71,27 @@ public function paginate(FilterParamsRequest $request): JsonResponse
 	Log::debug('Paginate method called with filter:', $request->all());
     try {
         $filter = $request->all();
-        
+
         // Debug cache
         $cache = Cache::get('tvoirifgjn.seirvjrc');
         \Log::debug('Cache content:', ['cache' => $cache]);
-        
+
         if (!$cache || data_get($cache, 'active') != 1) {
             abort(403);
         }
-        
+
         // Debug repository calls
         $statistic = (new DashboardRepository)->orderByStatusStatistics($filter);
         \Log::debug('Statistics:', $statistic);
-        
+
         $lastPage = (new DashboardRepository)->getLastPage(
             data_get($filter, 'perPage', 10),
             $statistic,
             data_get($filter, 'status')
         );
-        
+
         $orders = $this->adminRepository->ordersPaginate($filter);
-        
+
         return $this->successResponse(__('errors.' . ResponseError::SUCCESS, locale: $this->language), [
             'statistic' => $statistic,
             'orders'    => OrderResource::collection($orders),
@@ -169,7 +169,9 @@ public function paginate(FilterParamsRequest $request): JsonResponse
 	 */
 	public function store(StoreRequest $request): JsonResponse
 	{
+		Log::info('OrderController@store called with request data:', $request->all());
 		$validated = $request->validated();
+		Log::info('Validated data:', $validated);
 
 		if ((int)data_get(Settings::where('key', 'order_auto_approved')->first(), 'value') === 1) {
 			$validated['status'] = Order::STATUS_ACCEPTED;
@@ -182,7 +184,7 @@ public function paginate(FilterParamsRequest $request): JsonResponse
 			return $this->onErrorResponse($result);
 		}
 
-		//generateInvoices if order created 
+		//generateInvoices if order created
 		// if (data_get($result, 'data.generate_invoice', false)) {
 		// 	$invoiceResult = $this->orderService->generateInvoices(data_get($result, 'data.id'));
 		// 	if (!data_get($invoiceResult, 'status')) {
